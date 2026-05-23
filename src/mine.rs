@@ -87,7 +87,6 @@ struct StatusTemplate {
     reward_fee: i64,
     tx_fee: i64,
     total_reward: i64,
-    target: String,
     bits: String,
 }
 
@@ -939,7 +938,6 @@ fn status_template(template: &BlockTemplate, mode: MiningMode) -> StatusTemplate
         reward_fee: template.subsidy_sat(),
         tx_fee,
         total_reward,
-        target: template.target.clone(),
         bits: template.bits.clone(),
     }
 }
@@ -951,7 +949,7 @@ fn print_compact_status(
     range_hashrate: f64,
 ) {
     println!(
-        "height={} | reward_fee={} | tx_fee={} | total_reward={} | ranges_completed={} | elapsed={} | range_hashrate={} | target={} | bits={}",
+        "height={} | reward_fee={} | tx_fee={} | total_reward={} | ranges_completed={} | elapsed={} | range_hashrate={} | bits={}",
         template.height,
         template.reward_fee,
         template.tx_fee,
@@ -959,7 +957,6 @@ fn print_compact_status(
         ranges_completed,
         format_duration_days(elapsed),
         format_hps(range_hashrate),
-        template.target,
         template.bits,
     );
 }
