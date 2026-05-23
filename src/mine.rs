@@ -77,8 +77,18 @@ enum ScanOutcome {
 
 #[derive(Debug)]
 enum MonitorEvent {
-    TemplateChanged(BlockTemplate),
+    TemplateChanged,
     Error(String),
+}
+
+#[derive(Clone, Debug)]
+struct StatusTemplate {
+    height: u64,
+    reward_fee: i64,
+    tx_fee: i64,
+    total_reward: i64,
+    target: String,
+    bits: String,
 }
 
 struct ScanContext {
@@ -86,6 +96,7 @@ struct ScanContext {
     show_progress: u64,
     ranges_completed: u64,
     run_started_epoch: u64,
+    status_template: StatusTemplate,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -203,8 +214,6 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
                 active_client.get_block_template(None)?
             }
         };
-        print_template_summary("Mining template", &template, config.mining_mode);
-
         let prepared = PreparedTemplate {
             target: template_target(&template)?,
             template,
@@ -316,14 +325,12 @@ fn mine_template(
     run_started_epoch: u64,
 ) -> Result<TemplateOutcome, String> {
     let stop = Arc::new(AtomicBool::new(false));
-    let changed_template = Arc::new(Mutex::new(None::<BlockTemplate>));
     let (monitor_tx, monitor_rx) = mpsc::channel();
     let monitor_handles = spawn_template_monitors(
         rpc.clone(),
         prepared.template.clone(),
         config,
         Arc::clone(&stop),
-        Arc::clone(&changed_template),
         monitor_tx,
     );
 
@@ -335,7 +342,8 @@ fn mine_template(
             return Ok(TemplateOutcome::Stale);
         }
 
-        drain_monitor_events(&monitor_rx, config.mining_mode);
+        drain_monitor_events(&monitor_rx);
+        let status_template = status_template(&prepared.template, config.mining_mode);
         let work = build_work(prepared, config.mining_mode, extra_nonce, 0)?;
         let scan = scan_nonce_space(
             work.header,
@@ -346,6 +354,7 @@ fn mine_template(
                 show_progress: config.show_progress,
                 ranges_completed,
                 run_started_epoch,
+                status_template: status_template.clone(),
             },
         )?;
 
@@ -363,9 +372,6 @@ fn mine_template(
                 });
             }
             ScanOutcome::Stale => {
-                if let Some(template) = changed_template.lock().expect("template mutex").clone() {
-                    print_template_summary("Template changed", &template, config.mining_mode);
-                }
                 stop_monitors(stop, monitor_handles);
                 return Ok(TemplateOutcome::Stale);
             }
@@ -374,6 +380,7 @@ fn mine_template(
                 extra_nonce = extra_nonce.wrapping_add(1);
                 maybe_print_range_completion(
                     config.show_progress,
+                    &status_template,
                     ranges_completed,
                     run_started_epoch,
                     scan_stats,
@@ -403,6 +410,7 @@ fn scan_nonce_space(
             Duration::from_secs(context.show_progress),
             context.ranges_completed,
             context.run_started_epoch,
+            context.status_template.clone(),
         ))
     } else {
         None
@@ -502,7 +510,6 @@ fn spawn_template_monitors(
     original: BlockTemplate,
     config: &Config,
     stop: Arc<AtomicBool>,
-    changed_template: Arc<Mutex<Option<BlockTemplate>>>,
     tx: mpsc::Sender<MonitorEvent>,
 ) -> Vec<thread::JoinHandle<()>> {
     let mut handles = Vec::new();
@@ -513,7 +520,6 @@ fn spawn_template_monitors(
     {
         let rpc = rpc.clone();
         let stop = Arc::clone(&stop);
-        let changed_template = Arc::clone(&changed_template);
         let tx = tx.clone();
         let original_fingerprint = original_fingerprint.clone();
         handles.push(thread::spawn(move || {
@@ -525,10 +531,8 @@ fn spawn_template_monitors(
                 match rpc.get_block_template(None) {
                     Ok(template) => {
                         if template_fingerprint(&template, mining_mode) != original_fingerprint {
-                            *changed_template.lock().expect("template mutex") =
-                                Some(template.clone());
                             stop.store(true, Ordering::Relaxed);
-                            let _ = tx.send(MonitorEvent::TemplateChanged(template));
+                            let _ = tx.send(MonitorEvent::TemplateChanged);
                             break;
                         }
                     }
@@ -544,7 +548,6 @@ fn spawn_template_monitors(
         if let Some(longpollid) = original.longpollid.clone() {
             let rpc = rpc.clone();
             let stop = Arc::clone(&stop);
-            let changed_template = Arc::clone(&changed_template);
             let tx = tx.clone();
             let original_fingerprint = original_fingerprint.clone();
             handles.push(thread::spawn(move || {
@@ -553,10 +556,8 @@ fn spawn_template_monitors(
                         Ok(template) => {
                             if template_fingerprint(&template, mining_mode) != original_fingerprint
                             {
-                                *changed_template.lock().expect("template mutex") =
-                                    Some(template.clone());
                                 stop.store(true, Ordering::Relaxed);
-                                let _ = tx.send(MonitorEvent::TemplateChanged(template));
+                                let _ = tx.send(MonitorEvent::TemplateChanged);
                                 break;
                             }
                         }
@@ -610,12 +611,10 @@ fn hash_template_transactions(template: &BlockTemplate) -> u64 {
     hasher.finish()
 }
 
-fn drain_monitor_events(rx: &mpsc::Receiver<MonitorEvent>, mode: MiningMode) {
+fn drain_monitor_events(rx: &mpsc::Receiver<MonitorEvent>) {
     while let Ok(event) = rx.try_recv() {
         match event {
-            MonitorEvent::TemplateChanged(template) => {
-                print_template_summary("Template changed", &template, mode);
-            }
+            MonitorEvent::TemplateChanged => {}
             MonitorEvent::Error(err) => eprintln!("template monitor warning: {err}"),
         }
     }
@@ -924,30 +923,44 @@ fn template_target(template: &BlockTemplate) -> Result<[u8; 32], String> {
     bits_to_target(bits.to_le_bytes())
 }
 
-fn print_template_summary(label: &str, template: &BlockTemplate, mode: MiningMode) {
-    let fees = if mode == MiningMode::Template {
+fn status_template(template: &BlockTemplate, mode: MiningMode) -> StatusTemplate {
+    let tx_fee = if mode == MiningMode::Template {
         template.total_fees_sat()
     } else {
         0
     };
-    let reward = if mode == MiningMode::Template {
+    let total_reward = if mode == MiningMode::Template {
         template.coinbasevalue as i64
     } else {
         template.subsidy_sat()
     };
+    StatusTemplate {
+        height: template.height,
+        reward_fee: template.subsidy_sat(),
+        tx_fee,
+        total_reward,
+        target: template.target.clone(),
+        bits: template.bits.clone(),
+    }
+}
+
+fn print_compact_status(
+    template: &StatusTemplate,
+    ranges_completed: u64,
+    elapsed: Duration,
+    range_hashrate: f64,
+) {
     println!(
-        "{label}: height={} prevhash={} txs={} subsidy_sat={} fees_sat={} reward_sat={} bits={} target={}",
+        "height={} | reward_fee={} | tx_fee={} | total_reward={} | ranges_completed={} | elapsed={} | range_hashrate={} | target={} | bits={}",
         template.height,
-        template.previousblockhash,
-        match mode {
-            MiningMode::Template => template.transactions.len() + 1,
-            MiningMode::Empty => 1,
-        },
-        template.subsidy_sat(),
-        fees,
-        reward,
+        template.reward_fee,
+        template.tx_fee,
+        template.total_reward,
+        ranges_completed,
+        format_duration_days(elapsed),
+        format_hps(range_hashrate),
+        template.target,
         template.bits,
-        template.target
     );
 }
 
@@ -957,6 +970,7 @@ fn spawn_progress_thread(
     interval: Duration,
     ranges_completed: u64,
     run_started_epoch: u64,
+    status_template: StatusTemplate,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last_local = local_hashes.load(Ordering::Relaxed);
@@ -970,12 +984,11 @@ fn spawn_progress_thread(
             let local = local_hashes.load(Ordering::Relaxed);
             let interval_hashes = local.saturating_sub(last_local);
             let interval_secs = now.duration_since(last_time).as_secs_f64().max(0.001);
-            println!(
-                "progress elapsed={} range_hashes={} ranges_completed={} interval_rate={}",
-                format_duration_days(elapsed_since_epoch(run_started_epoch)),
-                format_u64(local),
+            print_compact_status(
+                &status_template,
                 ranges_completed,
-                format_hps(interval_hashes as f64 / interval_secs)
+                elapsed_since_epoch(run_started_epoch),
+                interval_hashes as f64 / interval_secs,
             );
             last_local = local;
             last_time = now;
@@ -985,6 +998,7 @@ fn spawn_progress_thread(
 
 fn maybe_print_range_completion(
     show_progress: u64,
+    status_template: &StatusTemplate,
     ranges_completed: u64,
     run_started_epoch: u64,
     scan_stats: ScanStats,
@@ -992,11 +1006,11 @@ fn maybe_print_range_completion(
     if show_progress == 0 {
         return;
     }
-    println!(
-        "nonce range complete ranges_completed={} elapsed={} range_rate={}",
+    print_compact_status(
+        status_template,
         ranges_completed,
-        format_duration_days(elapsed_since_epoch(run_started_epoch)),
-        format_hps(scan_stats.rate())
+        elapsed_since_epoch(run_started_epoch),
+        scan_stats.rate(),
     );
 }
 
@@ -1071,18 +1085,6 @@ fn current_unix_secs() -> u64 {
 
 fn elapsed_since_epoch(start_epoch: u64) -> Duration {
     Duration::from_secs(current_unix_secs().saturating_sub(start_epoch))
-}
-
-fn format_u64(value: u64) -> String {
-    let text = value.to_string();
-    let mut out = String::with_capacity(text.len() + text.len() / 3);
-    for (i, ch) in text.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
 }
 
 fn format_hps(value: f64) -> String {

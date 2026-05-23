@@ -61,7 +61,7 @@ Fields:
 - `mining_mode`: `template` includes Bitcoin Core's transaction list; `empty` mines coinbase-only and claims subsidy only.
 - `template_poll_seconds`: fixed-poll fallback interval for stale-work detection.
 - `longpoll`: enables `getblocktemplate` longpoll monitoring.
-- `show_progress`: `0` disables progress; `N` prints progress from the controller roughly every N seconds, outside the hash loop. Elapsed time is shown as `Nd hh:mm:ss`.
+- `show_progress`: `0` disables progress; `N` prints compact status from the controller roughly every N seconds, outside the hash loop. Elapsed time is shown as `Nd hh:mm:ss`.
 - `reserved_threads`: logical CPUs left for the OS, controller, RPC, and local `bitcoind` during `--init` defaults.
 - `rpc_servers`: failover endpoints. The miner uses the first healthy synced node and submits through failover if needed.
 - `optimized`: written by `--init`; includes backend, threads, batch size, interleave, hash rate, and CPU feature summary.
@@ -128,7 +128,13 @@ Live mining uses Bitcoin Core RPC:
 7. Scan nonce space with the selected backend. `--init` benchmarks available backends and writes the fastest choice to config.
 8. On a candidate, verify through an independent cold path before `submitblock`.
 
-Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Template-change logs include height, previous hash, transaction count, subsidy, fees, reward, bits, and target.
+Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Progress uses one compact status line:
+
+```text
+height=4965618 | reward_fee=596 | tx_fee=53216 | total_reward=53812 | ranges_completed=4 | elapsed=0d 00:13:21 | range_hashrate=1.309 GH/s | target=00000000000006b2c00000000000000000000000000000000000000000000000 | bits=1a06b2c0
+```
+
+`reward_fee` is the block subsidy, `tx_fee` is the included transaction fee total, and `total_reward` is subsidy plus transaction fees. A height change means a new best tip/template; a same-height fee or reward change means the current template economics changed.
 
 If a fork or reorg occurs, Bitcoin Core chooses the active best chain. The miner follows the active RPC endpoint's `previousblockhash`. If a failover endpoint is needed, the miner fetches fresh work from that endpoint rather than mixing a template from one node with a chain view from another.
 
