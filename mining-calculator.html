@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bitcoin Solo Mining Odds Calculator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171b22;
+      --panel-2: #1f2630;
+      --line: #303846;
+      --text: #f4f0e8;
+      --muted: #a9b0bb;
+      --soft: #d4d9e1;
+      --gold: #f7931a;
+      --gold-2: #ffbf63;
+      --green: #31d0aa;
+      --blue: #7db8ff;
+      --red: #ff7474;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        linear-gradient(180deg, rgba(247, 147, 26, 0.1), rgba(15, 17, 21, 0) 260px),
+        repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 18px),
+        var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .wrap {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 44px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: end;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 56px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      max-width: 700px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .brand-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 54px;
+      height: 54px;
+      margin-bottom: 12px;
+      border: 1px solid rgba(247, 147, 26, 0.5);
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 25%, var(--gold-2), var(--gold));
+      color: #1b1204;
+      font-weight: 900;
+      font-size: 33px;
+      box-shadow: 0 16px 36px rgba(247, 147, 26, 0.18);
+    }
+
+    .status {
+      min-width: 270px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(23, 27, 34, 0.82);
+      box-shadow: var(--shadow);
+    }
+
+    .status-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .status-title {
+      color: var(--soft);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 28px;
+      padding: 5px 9px;
+      border: 1px solid rgba(49, 208, 170, 0.38);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgba(49, 208, 170, 0.09);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .pill.warn {
+      border-color: rgba(255, 116, 116, 0.45);
+      color: var(--red);
+      background: rgba(255, 116, 116, 0.09);
+    }
+
+    .status-text {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1.05fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(23, 27, 34, 0.94);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(31, 38, 48, 0.72);
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .panel-body {
+      padding: 18px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      min-height: 94px;
+      padding: 13px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .metric .label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .metric .value {
+      display: block;
+      overflow-wrap: anywhere;
+      color: var(--text);
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.12;
+    }
+
+    .metric .hint {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 132px;
+      gap: 10px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #10141b;
+      color: var(--text);
+      padding: 10px 12px;
+      outline: none;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: rgba(247, 147, 26, 0.85);
+      box-shadow: 0 0 0 3px rgba(247, 147, 26, 0.14);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
+    button {
+      min-height: 42px;
+      padding: 10px 13px;
+      border: 1px solid rgba(247, 147, 26, 0.55);
+      border-radius: var(--radius);
+      background: var(--gold);
+      color: #1b1204;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      border-color: var(--line);
+      background: #141922;
+      color: var(--soft);
+    }
+
+    button:hover {
+      filter: brightness(1.05);
+    }
+
+    .results {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .result-card {
+      padding: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(247, 147, 26, 0.08), rgba(255, 255, 255, 0.035));
+    }
+
+    .result-card.primary {
+      grid-column: 1 / -1;
+      border-color: rgba(247, 147, 26, 0.38);
+      background: linear-gradient(180deg, rgba(247, 147, 26, 0.16), rgba(255, 255, 255, 0.035));
+    }
+
+    .result-card .label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .result-card .number {
+      display: block;
+      margin-top: 7px;
+      overflow-wrap: anywhere;
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1.08;
+    }
+
+    .result-card.primary .number {
+      color: var(--gold-2);
+      font-size: clamp(34px, 6vw, 54px);
+    }
+
+    .result-card .note {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .formula-box {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #10141b;
+      overflow: hidden;
+    }
+
+    .formula-box h3 {
+      margin: 0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      color: var(--soft);
+      font-size: 15px;
+    }
+
+    .formula-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .formula {
+      padding: 13px 15px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .formula:last-child {
+      border-bottom: 0;
+    }
+
+    code {
+      color: var(--gold-2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .substitution {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .footer-note {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .error {
+      display: none;
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 116, 116, 0.42);
+      border-radius: var(--radius);
+      color: #ffd2d2;
+      background: rgba(255, 116, 116, 0.08);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .error.visible {
+      display: block;
+    }
+
+    @media (max-width: 900px) {
+      header,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .status {
+        min-width: 0;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .wrap {
+        width: min(100% - 22px, 1180px);
+        padding-top: 18px;
+      }
+
+      .metric-grid,
+      .results,
+      .field-row {
+        grid-template-columns: 1fr;
+      }
+
+      .panel-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .result-card.primary .number {
+        font-size: 34px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <span class="brand-mark" aria-hidden="true">₿</span>
+        <h1>Bitcoin Solo Mining Odds</h1>
+        <p class="subhead">Live network data, plain probability math, and no pool assumptions. Enter your hashrate and time window to estimate the chance of finding at least one valid block.</p>
+      </div>
+      <section class="status" aria-live="polite">
+        <div class="status-top">
+          <span class="status-title">Data Source</span>
+          <span id="sourcePill" class="pill">Live</span>
+        </div>
+        <p id="statusText" class="status-text">Fetching mempool.space data...</p>
+      </section>
+    </header>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Network Snapshot</h2>
+          <button id="refreshBtn" type="button" title="Refresh live Bitcoin network data">Refresh</button>
+        </div>
+        <div class="panel-body">
+          <div class="metric-grid">
+            <div class="metric">
+              <span class="label">Latest Height</span>
+              <span id="heightValue" class="value">...</span>
+              <span class="hint">Tip height from mempool.space.</span>
+            </div>
+            <div class="metric">
+              <span class="label">Difficulty</span>
+              <span id="difficultyValue" class="value">...</span>
+              <span class="hint">Current target difficulty.</span>
+            </div>
+            <div class="metric">
+              <span class="label">Network Hashrate</span>
+              <span id="networkHashrateValue" class="value">...</span>
+              <span class="hint">Current 1 month estimate.</span>
+            </div>
+            <div class="metric">
+              <span class="label">Avg Block Time</span>
+              <span id="avgBlockTimeValue" class="value">...</span>
+              <span id="retargetHint" class="hint">Difficulty adjustment context.</span>
+            </div>
+          </div>
+          <p class="footer-note">The network hashrate is an estimate derived from recent blocks, not a directly measured physical number.</p>
+          <div id="errorBox" class="error"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Your Mining Inputs</h2>
+          <button id="sampleBtn" type="button" class="secondary" title="Set a 1 PH/s example">1 PH/s Example</button>
+        </div>
+        <div class="panel-body">
+          <form id="calcForm" class="form-grid">
+            <div class="field-row">
+              <div>
+                <label for="hashrateInput">Your hashrate</label>
+                <input id="hashrateInput" type="number" min="0" step="any" value="1" inputmode="decimal">
+              </div>
+              <div>
+                <label for="hashrateUnit">Unit</label>
+                <select id="hashrateUnit">
+                  <option value="1">H/s</option>
+                  <option value="1000">KH/s</option>
+                  <option value="1000000">MH/s</option>
+                  <option value="1000000000">GH/s</option>
+                  <option value="1000000000000">TH/s</option>
+                  <option value="1000000000000000" selected>PH/s</option>
+                  <option value="1000000000000000000">EH/s</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div>
+                <label for="durationInput">Mining duration</label>
+                <input id="durationInput" type="number" min="0" step="any" value="30" inputmode="decimal">
+              </div>
+              <div>
+                <label for="durationUnit">Unit</label>
+                <select id="durationUnit">
+                  <option value="1">seconds</option>
+                  <option value="60">minutes</option>
+                  <option value="3600">hours</option>
+                  <option value="86400" selected>days</option>
+                  <option value="2592000">30-day months</option>
+                  <option value="31536000">years</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label for="difficultyInput">Difficulty</label>
+              <input id="difficultyInput" type="number" min="0" step="any" inputmode="decimal" placeholder="Fetched from mempool.space">
+            </div>
+
+            <div class="field-row">
+              <div>
+                <label for="networkHashrateInput">Network hashrate</label>
+                <input id="networkHashrateInput" type="number" min="0" step="any" inputmode="decimal" placeholder="Fetched from mempool.space">
+              </div>
+              <div>
+                <label for="networkHashrateUnit">Unit</label>
+                <select id="networkHashrateUnit">
+                  <option value="1000000000000">TH/s</option>
+                  <option value="1000000000000000">PH/s</option>
+                  <option value="1000000000000000000" selected>EH/s</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="submit">Calculate</button>
+              <button id="resetBtn" type="button" class="secondary">Reset Inputs</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-head">
+        <h2>Calculated Odds</h2>
+      </div>
+      <div class="panel-body">
+        <div class="results">
+          <div class="result-card primary">
+            <span class="label">Chance of at least one block</span>
+            <span id="probabilityValue" class="number">...</span>
+            <span id="probabilityNote" class="note">Enter a hashrate and duration.</span>
+          </div>
+          <div class="result-card">
+            <span class="label">Expected wait</span>
+            <span id="expectedWaitValue" class="number">...</span>
+            <span class="note">Mean time, not a guarantee.</span>
+          </div>
+          <div class="result-card">
+            <span class="label">Next block odds</span>
+            <span id="nextBlockValue" class="number">...</span>
+            <span class="note">Approximately your network hashrate share.</span>
+          </div>
+          <div class="result-card">
+            <span class="label">Expected blocks in window</span>
+            <span id="expectedBlocksValue" class="number">...</span>
+            <span class="note">The Poisson mean for your chosen duration.</span>
+          </div>
+          <div class="result-card">
+            <span class="label">Your network share</span>
+            <span id="shareValue" class="number">...</span>
+            <span id="shareNote" class="note">Requires network hashrate.</span>
+          </div>
+        </div>
+
+        <div class="formula-box">
+          <h3>Formulas Used</h3>
+          <div class="formula-list">
+            <div class="formula">
+              <code>expected_hashes = difficulty × 2^32</code>
+              <span id="formulaExpectedHashes" class="substitution">Waiting for inputs.</span>
+            </div>
+            <div class="formula">
+              <code>expected_seconds = expected_hashes ÷ your_hashrate</code>
+              <span id="formulaExpectedSeconds" class="substitution">Waiting for inputs.</span>
+            </div>
+            <div class="formula">
+              <code>P(success in t seconds) = 1 - e^(-(your_hashrate × t) ÷ expected_hashes)</code>
+              <span id="formulaProbability" class="substitution">Waiting for inputs.</span>
+            </div>
+            <div class="formula">
+              <code>network_share = your_hashrate ÷ network_hashrate</code>
+              <span id="formulaShare" class="substitution">Waiting for inputs.</span>
+            </div>
+            <div class="formula">
+              <code>next_block_odds ≈ network_share</code>
+              <span id="formulaNextBlock" class="substitution">Waiting for inputs.</span>
+            </div>
+            <div class="formula">
+              <code>expected_blocks_in_window = t ÷ expected_seconds</code>
+              <span id="formulaBlocks" class="substitution">Waiting for inputs.</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="footer-note">Each hash is modeled as an independent random draw from a 256-bit space. Increasing hashrate increases the number of draws per second; it does not make any individual nonce smarter.</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = {
+      height: "https://mempool.space/api/blocks/tip/height",
+      difficulty: "https://mempool.space/api/v1/difficulty-adjustment",
+      hashrate: "https://mempool.space/api/v1/mining/hashrate/1m"
+    };
+
+    const TWO_POW_32 = 4294967296;
+    const state = {
+      difficulty: null,
+      networkHashrate: null,
+      height: null,
+      adjustment: null,
+      fetchedAt: null
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    const els = {
+      sourcePill: $("sourcePill"),
+      statusText: $("statusText"),
+      errorBox: $("errorBox"),
+      heightValue: $("heightValue"),
+      difficultyValue: $("difficultyValue"),
+      networkHashrateValue: $("networkHashrateValue"),
+      avgBlockTimeValue: $("avgBlockTimeValue"),
+      retargetHint: $("retargetHint"),
+      hashrateInput: $("hashrateInput"),
+      hashrateUnit: $("hashrateUnit"),
+      durationInput: $("durationInput"),
+      durationUnit: $("durationUnit"),
+      difficultyInput: $("difficultyInput"),
+      networkHashrateInput: $("networkHashrateInput"),
+      networkHashrateUnit: $("networkHashrateUnit"),
+      probabilityValue: $("probabilityValue"),
+      probabilityNote: $("probabilityNote"),
+      expectedWaitValue: $("expectedWaitValue"),
+      nextBlockValue: $("nextBlockValue"),
+      expectedBlocksValue: $("expectedBlocksValue"),
+      shareValue: $("shareValue"),
+      shareNote: $("shareNote"),
+      formulaExpectedHashes: $("formulaExpectedHashes"),
+      formulaExpectedSeconds: $("formulaExpectedSeconds"),
+      formulaProbability: $("formulaProbability"),
+      formulaShare: $("formulaShare"),
+      formulaNextBlock: $("formulaNextBlock"),
+      formulaBlocks: $("formulaBlocks")
+    };
+
+    function safeNumber(value) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function formatNumber(value, digits = 2) {
+      if (!Number.isFinite(value)) return "...";
+      return new Intl.NumberFormat("en-US", {
+        maximumFractionDigits: digits
+      }).format(value);
+    }
+
+    function formatScientific(value, digits = 3) {
+      if (!Number.isFinite(value)) return "...";
+      if (value === 0) return "0";
+      const abs = Math.abs(value);
+      if (abs >= 1e6 || abs < 0.001) return value.toExponential(digits);
+      return formatNumber(value, digits);
+    }
+
+    function formatPercent(value) {
+      if (!Number.isFinite(value)) return "...";
+      if (value === 0) return "0%";
+      const pct = value * 100;
+      if (pct < 0.000001) return pct.toExponential(3) + "%";
+      if (pct < 0.01) return pct.toFixed(6) + "%";
+      if (pct < 1) return pct.toFixed(4) + "%";
+      if (pct < 10) return pct.toFixed(3) + "%";
+      return pct.toFixed(2) + "%";
+    }
+
+    function formatHashrate(hps) {
+      if (!Number.isFinite(hps)) return "...";
+      const units = [
+        ["EH/s", 1e18],
+        ["PH/s", 1e15],
+        ["TH/s", 1e12],
+        ["GH/s", 1e9],
+        ["MH/s", 1e6],
+        ["KH/s", 1e3],
+        ["H/s", 1]
+      ];
+      const [label, scale] = units.find(([, s]) => hps >= s) || units[units.length - 1];
+      return `${formatNumber(hps / scale, 3)} ${label}`;
+    }
+
+    function formatDuration(seconds) {
+      if (!Number.isFinite(seconds)) return "...";
+      if (seconds < 60) return `${formatNumber(seconds, 2)} seconds`;
+      const minutes = seconds / 60;
+      if (minutes < 60) return `${formatNumber(minutes, 2)} minutes`;
+      const hours = minutes / 60;
+      if (hours < 48) return `${formatNumber(hours, 2)} hours`;
+      const days = hours / 24;
+      if (days < 730) return `${formatNumber(days, 2)} days`;
+      const years = days / 365;
+      if (years < 1e6) return `${formatNumber(years, 2)} years`;
+      return `${formatScientific(years, 3)} years`;
+    }
+
+    function formatOdds(p) {
+      if (!Number.isFinite(p) || p <= 0) return "...";
+      if (p >= 1) return "1 in 1";
+      return `1 in ${formatNumber(1 / p, 0)}`;
+    }
+
+    function setStatus(ok, message) {
+      els.sourcePill.textContent = ok ? "Live" : "Manual";
+      els.sourcePill.classList.toggle("warn", !ok);
+      els.statusText.textContent = message;
+    }
+
+    function setError(message) {
+      if (!message) {
+        els.errorBox.classList.remove("visible");
+        els.errorBox.textContent = "";
+        return;
+      }
+      els.errorBox.textContent = message;
+      els.errorBox.classList.add("visible");
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+      return res.json();
+    }
+
+    async function fetchText(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+      return res.text();
+    }
+
+    async function refreshLiveData() {
+      setStatus(true, "Fetching mempool.space data...");
+      setError("");
+      try {
+        const [heightText, adjustment, hashrate] = await Promise.all([
+          fetchText(API.height),
+          fetchJson(API.difficulty),
+          fetchJson(API.hashrate)
+        ]);
+
+        const height = Number(heightText);
+        const difficulty = Number(hashrate.currentDifficulty);
+        const networkHashrate = Number(hashrate.currentHashrate);
+
+        if (!Number.isFinite(height) || !Number.isFinite(difficulty) || !Number.isFinite(networkHashrate)) {
+          throw new Error("The API response did not include the expected numeric fields.");
+        }
+
+        state.height = height;
+        state.difficulty = difficulty;
+        state.networkHashrate = networkHashrate;
+        state.adjustment = adjustment;
+        state.fetchedAt = new Date();
+
+        els.difficultyInput.value = difficulty;
+        els.networkHashrateInput.value = networkHashrate / Number(els.networkHashrateUnit.value);
+
+        renderNetwork();
+        calculate();
+        setStatus(true, `Updated ${state.fetchedAt.toLocaleTimeString()} from mempool.space.`);
+      } catch (err) {
+        setStatus(false, "Live fetch failed. Manual inputs still work.");
+        setError(err.message || "Unable to fetch live Bitcoin network data.");
+        renderNetwork();
+        calculate();
+      }
+    }
+
+    function renderNetwork() {
+      els.heightValue.textContent = state.height ? formatNumber(state.height, 0) : "...";
+      els.difficultyValue.textContent = state.difficulty ? formatNumber(state.difficulty, 2) : "...";
+      els.networkHashrateValue.textContent = state.networkHashrate ? formatHashrate(state.networkHashrate) : "...";
+
+      const adjustment = state.adjustment;
+      if (adjustment && Number.isFinite(Number(adjustment.timeAvg))) {
+        els.avgBlockTimeValue.textContent = formatDuration(Number(adjustment.timeAvg) / 1000);
+        const change = Number(adjustment.difficultyChange);
+        const remaining = Number(adjustment.remainingBlocks);
+        const nextHeight = Number(adjustment.nextRetargetHeight);
+        const retargetDate = Number(adjustment.estimatedRetargetDate);
+        const parts = [];
+        if (Number.isFinite(change)) parts.push(`${change >= 0 ? "+" : ""}${change.toFixed(2)}% estimate`);
+        if (Number.isFinite(remaining)) parts.push(`${formatNumber(remaining, 0)} blocks left`);
+        if (Number.isFinite(nextHeight)) parts.push(`height ${formatNumber(nextHeight, 0)}`);
+        if (Number.isFinite(retargetDate)) parts.push(new Date(retargetDate).toLocaleString());
+        els.retargetHint.textContent = parts.join(" · ") || "Difficulty adjustment context.";
+      } else {
+        els.avgBlockTimeValue.textContent = "...";
+        els.retargetHint.textContent = "Difficulty adjustment context.";
+      }
+    }
+
+    function getInputs() {
+      const hashrateValue = safeNumber(els.hashrateInput.value);
+      const hashrateUnit = Number(els.hashrateUnit.value);
+      const durationValue = safeNumber(els.durationInput.value);
+      const durationUnit = Number(els.durationUnit.value);
+      const difficulty = safeNumber(els.difficultyInput.value) || state.difficulty;
+      const networkHashrateValue = safeNumber(els.networkHashrateInput.value);
+      const networkHashrate = networkHashrateValue ? networkHashrateValue * Number(els.networkHashrateUnit.value) : state.networkHashrate;
+
+      return {
+        yourHashrate: hashrateValue ? hashrateValue * hashrateUnit : null,
+        seconds: durationValue ? durationValue * durationUnit : null,
+        difficulty,
+        networkHashrate
+      };
+    }
+
+    function calculate() {
+      const { yourHashrate, seconds, difficulty, networkHashrate } = getInputs();
+      if (!yourHashrate || !seconds || !difficulty) {
+        els.probabilityValue.textContent = "...";
+        els.probabilityNote.textContent = "Enter positive hashrate, duration, and difficulty.";
+        els.expectedWaitValue.textContent = "...";
+        els.nextBlockValue.textContent = "...";
+        els.expectedBlocksValue.textContent = "...";
+        els.shareValue.textContent = "...";
+        els.shareNote.textContent = "Requires network hashrate.";
+        updateFormulaPlaceholders();
+        return;
+      }
+
+      const expectedHashes = difficulty * TWO_POW_32;
+      const expectedSeconds = expectedHashes / yourHashrate;
+      const lambda = seconds / expectedSeconds;
+      const probability = 1 - Math.exp(-lambda);
+      const expectedBlocks = lambda;
+      const share = networkHashrate ? yourHashrate / networkHashrate : null;
+
+      els.probabilityValue.textContent = formatPercent(probability);
+      els.probabilityNote.textContent = `${formatOdds(probability)} over ${formatDuration(seconds)}.`;
+      els.expectedWaitValue.textContent = formatDuration(expectedSeconds);
+      els.expectedBlocksValue.textContent = formatScientific(expectedBlocks, 4);
+
+      if (share && Number.isFinite(share)) {
+        els.nextBlockValue.textContent = `${formatPercent(share)} · ${formatOdds(share)}`;
+        els.shareValue.textContent = formatPercent(share);
+        els.shareNote.textContent = `${formatHashrate(yourHashrate)} out of ${formatHashrate(networkHashrate)}.`;
+      } else {
+        els.nextBlockValue.textContent = "...";
+        els.shareValue.textContent = "...";
+        els.shareNote.textContent = "Enter network hashrate to calculate share.";
+      }
+
+      els.formulaExpectedHashes.textContent = `${formatNumber(difficulty, 2)} × 4,294,967,296 = ${formatScientific(expectedHashes, 4)} hashes`;
+      els.formulaExpectedSeconds.textContent = `${formatScientific(expectedHashes, 4)} ÷ ${formatHashrate(yourHashrate)} = ${formatDuration(expectedSeconds)}`;
+      els.formulaProbability.textContent = `1 - e^(-(${formatHashrate(yourHashrate)} × ${formatDuration(seconds)}) ÷ ${formatScientific(expectedHashes, 4)}) = ${formatPercent(probability)}`;
+      els.formulaBlocks.textContent = `${formatDuration(seconds)} ÷ ${formatDuration(expectedSeconds)} = ${formatScientific(expectedBlocks, 4)} expected blocks`;
+
+      if (share && Number.isFinite(share)) {
+        els.formulaShare.textContent = `${formatHashrate(yourHashrate)} ÷ ${formatHashrate(networkHashrate)} = ${formatPercent(share)}`;
+        els.formulaNextBlock.textContent = `Next block odds ≈ ${formatPercent(share)} (${formatOdds(share)})`;
+      } else {
+        els.formulaShare.textContent = "Network hashrate is missing.";
+        els.formulaNextBlock.textContent = "Network hashrate is missing.";
+      }
+    }
+
+    function updateFormulaPlaceholders() {
+      const message = "Waiting for valid inputs.";
+      els.formulaExpectedHashes.textContent = message;
+      els.formulaExpectedSeconds.textContent = message;
+      els.formulaProbability.textContent = message;
+      els.formulaShare.textContent = message;
+      els.formulaNextBlock.textContent = message;
+      els.formulaBlocks.textContent = message;
+    }
+
+    function resetInputs() {
+      els.hashrateInput.value = "1";
+      els.hashrateUnit.value = "1000000000000000";
+      els.durationInput.value = "30";
+      els.durationUnit.value = "86400";
+      if (state.difficulty) els.difficultyInput.value = state.difficulty;
+      if (state.networkHashrate) els.networkHashrateInput.value = state.networkHashrate / Number(els.networkHashrateUnit.value);
+      calculate();
+    }
+
+    $("calcForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      calculate();
+    });
+
+    ["hashrateInput", "hashrateUnit", "durationInput", "durationUnit", "difficultyInput", "networkHashrateInput", "networkHashrateUnit"].forEach((id) => {
+      $(id).addEventListener("input", calculate);
+      $(id).addEventListener("change", calculate);
+    });
+
+    $("refreshBtn").addEventListener("click", refreshLiveData);
+    $("resetBtn").addEventListener("click", resetInputs);
+    $("sampleBtn").addEventListener("click", () => {
+      els.hashrateInput.value = "1";
+      els.hashrateUnit.value = "1000000000000000";
+      calculate();
+    });
+
+    renderNetwork();
+    updateFormulaPlaceholders();
+    refreshLiveData();
+  </script>
+</body>
+</html>

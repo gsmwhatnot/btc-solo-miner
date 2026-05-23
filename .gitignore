@@ -1,0 +1,39 @@
+# Rust build output
+/target/
+
+# Local miner configuration and runtime state
+/config.json
+/mined.json
+/mined.json.tmp
+
+# Temporary and scratch directories
+/tmp/
+/temp/
+/.tmp/
+/.temp/
+
+# Logs
+*.log
+*.log.*
+/logs/
+
+# Profiling and benchmark artifacts
+perf.data
+perf.data.old
+*.profraw
+*.profdata
+flamegraph.svg
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Environment files
+.env
+.env.*
+!.env.example

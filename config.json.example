@@ -1,0 +1,18 @@
+{
+  "initialized": false,
+  "wallet_address": "",
+  "mining_mode": "template",
+  "template_poll_seconds": 5,
+  "longpoll": true,
+  "show_progress": 10,
+  "reserved_threads": 1,
+  "rpc_servers": [
+    {
+      "name": "local",
+      "url": "http://127.0.0.1:8332",
+      "username": "",
+      "password": ""
+    }
+  ],
+  "optimized": null
+}

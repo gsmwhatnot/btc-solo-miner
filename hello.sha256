@@ -1,0 +1,184 @@
+  Input bytes:
+
+  "hello" = 68 65 6c 6c 6f
+
+  Final result will be:
+
+  SHA256("hello")
+  = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+
+  1. Pad The Message
+
+  SHA-256 works on 64-byte / 512-bit chunks.
+
+  Original message length:
+
+  5 bytes = 40 bits = 0x28
+
+  Padding rule:
+
+  message
+  + 0x80
+  + zero bytes until byte length is 56 mod 64
+  + original bit length as 8-byte big-endian integer
+
+  So "hello" becomes one 64-byte chunk:
+
+  68656c6c6f8000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000028
+
+  2. Split Into 16 Words
+
+  SHA-256 treats the chunk as sixteen 32-bit big-endian words:
+
+  W[00] = 68656c6c
+  W[01] = 6f800000
+  W[02] = 00000000
+  W[03] = 00000000
+  W[04] = 00000000
+  W[05] = 00000000
+  W[06] = 00000000
+  W[07] = 00000000
+  W[08] = 00000000
+  W[09] = 00000000
+  W[10] = 00000000
+  W[11] = 00000000
+  W[12] = 00000000
+  W[13] = 00000000
+  W[14] = 00000000
+  W[15] = 00000028
+
+  Then SHA-256 expands these to 64 words. For example:
+
+  W[16] = 7594884c
+  W[17] = 6f910000
+  W[18] = d532d15a
+  W[19] = a01bde7a
+  ...
+  W[63] = derived value
+
+  Expansion formula:
+
+  W[i] = σ1(W[i-2]) + W[i-7] + σ0(W[i-15]) + W[i-16]
+
+  where additions wrap at 32 bits.
+
+  3. Initial State
+
+  SHA-256 starts with eight fixed 32-bit values:
+
+  H0 = 6a09e667
+  H1 = bb67ae85
+  H2 = 3c6ef372
+  H3 = a54ff53a
+  H4 = 510e527f
+  H5 = 9b05688c
+  H6 = 1f83d9ab
+  H7 = 5be0cd19
+
+  These become working variables:
+
+  a = H0
+  b = H1
+  c = H2
+  d = H3
+  e = H4
+  f = H5
+  g = H6
+  h = H7
+
+  4. Compression Rounds
+
+  SHA-256 runs 64 rounds.
+
+  Each round computes:
+
+  T1 = h + Σ1(e) + Ch(e,f,g) + K[i] + W[i]
+  T2 = Σ0(a) + Maj(a,b,c)
+
+  h = g
+  g = f
+  f = e
+  e = d + T1
+  d = c
+  c = b
+  b = a
+  a = T1 + T2
+
+  After round 0, the state is:
+
+  a = 646df4b9
+  b = 6a09e667
+  c = bb67ae85
+  d = 3c6ef372
+  e = 012d4f0e
+  f = 510e527f
+  g = 9b05688c
+  h = 1f83d9ab
+
+  After round 1:
+
+  a = a01b3ad4
+  b = 646df4b9
+  c = 6a09e667
+  d = bb67ae85
+  e = 27198bd1
+  f = 012d4f0e
+  g = 510e527f
+  h = 9b05688c
+
+  After round 2:
+
+  a = 46a5c0f7
+  b = a01b3ad4
+  c = 646df4b9
+  d = 6a09e667
+  e = 0fbadb9b
+  f = 27198bd1
+  g = 012d4f0e
+  h = 510e527f
+
+  This continues through round 63.
+
+  After the final round, the working state is:
+
+  a = c2e86753
+  b = a448f489
+  c = ea7947b8
+  d = 2069ed64
+  e = ca07cbdd
+  f = 84a1d9d2
+  g = 538059b7
+  h = 37aacb0b
+
+  5. Add Back Into Initial State
+
+  Now SHA-256 adds the working state back into the original H0..H7 values:
+
+  H0 = 6a09e667 + c2e86753 = 2cf24dba
+  H1 = bb67ae85 + a448f489 = 5fb0a30e
+  H2 = 3c6ef372 + ea7947b8 = 26e83b2a
+  H3 = a54ff53a + 2069ed64 = c5b9e29e
+  H4 = 510e527f + ca07cbdd = 1b161e5c
+  H5 = 9b05688c + 84a1d9d2 = 1fa7425e
+  H6 = 1f83d9ab + 538059b7 = 73043362
+  H7 = 5be0cd19 + 37aacb0b = 938b9824
+
+  All additions are modulo 2^32.
+
+  Concatenate them:
+
+  2cf24dba
+  5fb0a30e
+  26e83b2a
+  c5b9e29e
+  1b161e5c
+  1fa7425e
+  73043362
+  938b9824
+
+  Final digest:
+
+  2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
