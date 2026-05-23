@@ -67,6 +67,7 @@ impl OptimizedSettings {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MiningBackend {
+    Avx512,
     Scalar,
     #[default]
     Shani,
@@ -75,6 +76,7 @@ pub enum MiningBackend {
 impl MiningBackend {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Avx512 => "AVX512 SHA256d80",
             Self::Scalar => "scalar SHA256d80",
             Self::Shani => "x86 SHA-NI SHA256d80",
         }
@@ -90,7 +92,9 @@ pub struct CpuFeatures {
     pub sse41: bool,
     pub avx2: bool,
     pub avx512f: bool,
+    pub avx512bw: bool,
     pub avx512vl: bool,
+    pub avx512vnni: bool,
 }
 
 impl CpuFeatures {
@@ -104,15 +108,25 @@ impl CpuFeatures {
             features.sse41 = std::is_x86_feature_detected!("sse4.1");
             features.avx2 = std::is_x86_feature_detected!("avx2");
             features.avx512f = std::is_x86_feature_detected!("avx512f");
+            features.avx512bw = std::is_x86_feature_detected!("avx512bw");
             features.avx512vl = std::is_x86_feature_detected!("avx512vl");
+            features.avx512vnni = std::is_x86_feature_detected!("avx512vnni");
         }
         features
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "sha_ni={}, sse2={}, ssse3={}, sse4.1={}, avx2={}, avx512f={}, avx512vl={}",
-            self.sha_ni, self.sse2, self.ssse3, self.sse41, self.avx2, self.avx512f, self.avx512vl
+            "sha_ni={}, sse2={}, ssse3={}, sse4.1={}, avx2={}, avx512f={}, avx512bw={}, avx512vl={}, avx512vnni={}",
+            self.sha_ni,
+            self.sse2,
+            self.ssse3,
+            self.sse41,
+            self.avx2,
+            self.avx512f,
+            self.avx512bw,
+            self.avx512vl,
+            self.avx512vnni
         )
     }
 }
@@ -223,7 +237,9 @@ mod tests {
             "sse41": true,
             "avx2": false,
             "avx512f": false,
+            "avx512bw": false,
             "avx512vl": false
+            ,"avx512vnni": false
           },
           "benchmarked_at_unix": 1
         }"#;

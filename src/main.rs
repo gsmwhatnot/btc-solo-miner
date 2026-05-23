@@ -11,9 +11,9 @@ use benchmark::{
 };
 use config::{load_config, load_or_default};
 use mine::MiningOverrides;
-use sha256d::{compression_sha256d80, decode_hex_80, library_sha256d80, specialized_sha256d80};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use sha256d::{shani_available, shani_sha256d80};
+use sha256d::{avx512_available, avx512_sha256d80, shani_available, shani_sha256d80};
+use sha256d::{compression_sha256d80, decode_hex_80, library_sha256d80, specialized_sha256d80};
 use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -217,9 +217,17 @@ fn run_benchmark(seconds: u64, threads: usize) -> Result<(), String> {
     let specialized = specialized_sha256d80(&header);
     let compression = compression_sha256d80(&header);
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let avx512 = avx512_sha256d80(&header);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let shani = shani_sha256d80(&header);
     if library != specialized || library != compression {
         return Err("candidate SHA256d80 output does not match library output".to_string());
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx512) = avx512 {
+        if library != avx512 {
+            return Err("custom AVX512 SHA256d80 output does not match library output".to_string());
+        }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if let Some(shani) = shani {
@@ -246,6 +254,18 @@ fn run_benchmark(seconds: u64, threads: usize) -> Result<(), String> {
     print_result(&compression_candidate);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let avx512_candidate = if avx512_available() {
+        let result = benchmark::run(Backend::Avx512, header, duration, threads);
+        print_result(&result);
+        Some(result)
+    } else {
+        println!("Backend: custom x86 AVX512 SHA256d80");
+        println!("  skipped: required AVX512F CPU features are not available");
+        println!();
+        None
+    };
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let shani_candidate = if shani_available() {
         let result = benchmark::run(Backend::Shani80, header, duration, threads);
         print_result(&result);
@@ -266,6 +286,17 @@ fn run_benchmark(seconds: u64, threads: usize) -> Result<(), String> {
         compression_candidate.hashes_per_second / baseline.hashes_per_second
     );
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(result) = &avx512_candidate {
+        println!(
+            "Custom AVX512 speedup: {:.3}x",
+            result.hashes_per_second / baseline.hashes_per_second
+        );
+        println!(
+            "Custom AVX512 vs compression: {:.3}x",
+            result.hashes_per_second / compression_candidate.hashes_per_second
+        );
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if let Some(result) = &shani_candidate {
         println!(
             "Custom SHA-NI speedup: {:.3}x",
@@ -280,6 +311,10 @@ fn run_benchmark(seconds: u64, threads: usize) -> Result<(), String> {
         "Checksums: baseline={:016x} scalar={:016x} compression={:016x}",
         baseline.checksum, candidate.checksum, compression_candidate.checksum
     );
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(result) = &avx512_candidate {
+        println!("Custom AVX512 checksum: {:016x}", result.checksum);
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if let Some(result) = &shani_candidate {
         println!("Custom SHA-NI checksum: {:016x}", result.checksum);

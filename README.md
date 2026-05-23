@@ -27,7 +27,7 @@ This repository includes `.cargo/config.toml` with:
 rustflags = ["-C", "target-cpu=native"]
 ```
 
-That is intentional. The hot path uses CPU feature detection, and native code generation matters for benchmark results. On CPUs with SHA-NI, the miner uses the SHA-NI backend. On CPUs without SHA-NI, it falls back to the fixed-header scalar backend. Release builds also use fat LTO and one codegen unit in `Cargo.toml`.
+That is intentional. The hot path uses CPU feature detection, and native code generation matters for benchmark results. The miner can use SHA-NI, AVX512, or scalar fixed-header SHA256d80 depending on what the CPU exposes and what `--init` measures fastest. Release builds also use fat LTO and one codegen unit in `Cargo.toml`.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ Arguments:
 
 `--init` tests:
 
-- backend: scalar always; SHA-NI when the CPU exposes `sha`
+- backend: scalar always; SHA-NI when the CPU exposes `sha`; AVX512 when the CPU exposes `avx512f`
 - interleave: `1`, `2`, `4`, `8`
 - batch size: `65536`, `262144`, `1048576`
 - thread counts around available logical CPUs minus `reserved_threads`
@@ -125,7 +125,7 @@ Live mining uses Bitcoin Core RPC:
 4. In `template` mode, preserve Core's template transaction order.
 5. In `empty` mode, include only coinbase and claim subsidy only.
 6. Build the merkle root and 80-byte header with `bitcoin` consensus serialization.
-7. Scan nonce space with the selected backend. SHA-NI is preferred when available; scalar fixed-header SHA256d80 is used otherwise.
+7. Scan nonce space with the selected backend. `--init` benchmarks available backends and writes the fastest choice to config.
 8. On a candidate, verify through an independent cold path before `submitblock`.
 
 Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Template-change logs include height, previous hash, transaction count, subsidy, fees, reward, bits, and target.
@@ -160,6 +160,7 @@ Implemented optimizations:
 - fixed padding and length blocks
 - nonce write directly into the second header chunk
 - x86 SHA-NI compression path
+- x86 AVX512 16-lane SHA256d80 path for CPUs without SHA-NI but with AVX512F
 - interleaved SHA-NI streams: `1`, `2`, `4`, `8`
 - shared-header split nonce ranges, currently better than per-worker extraNonce contexts on tested hardware
 - large batch sizes to avoid checking atomics inside every nonce

@@ -20,7 +20,7 @@ pub fn run_init(
 ) -> Result<(), String> {
     use crate::config::save_config;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    use crate::sha256d::shani_available;
+    use crate::sha256d::{avx512_available, shani_available};
 
     let header = decode_hex_80(INIT_HEADER_HEX)?;
     let target = [0xff; 32];
@@ -40,6 +40,15 @@ pub fn run_init(
     println!(
         "SHA-NI backend: {}",
         if shani_available() {
+            "enabled"
+        } else {
+            "unavailable"
+        }
+    );
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    println!(
+        "AVX512 backend: {}",
+        if avx512_available() {
             "enabled"
         } else {
             "unavailable"
@@ -68,6 +77,29 @@ pub fn run_init(
                 Interleave::One,
                 &result,
             );
+
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            if avx512_available() {
+                candidates_tested += 1;
+                let result = benchmark::run_avx512_target_scan_with_options(
+                    header, target, duration, threads, batch_size, false,
+                );
+                println!(
+                    "candidate backend=avx512 threads={} batch={} interleave=16 -> {}",
+                    threads,
+                    batch_size,
+                    format_hps(result.hashes_per_second)
+                );
+
+                update_best(
+                    &mut best,
+                    MiningBackend::Avx512,
+                    threads,
+                    batch_size,
+                    Interleave::One,
+                    &result,
+                );
+            }
 
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             if shani_available() {

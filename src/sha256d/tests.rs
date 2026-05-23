@@ -8,6 +8,10 @@ fn specialized_matches_library_for_genesis_header() {
     assert_eq!(specialized_sha256d80(&header), library_sha256d80(&header));
     assert_eq!(compression_sha256d80(&header), library_sha256d80(&header));
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx512) = avx512_sha256d80(&header) {
+        assert_eq!(avx512, library_sha256d80(&header));
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if let Some(shani) = shani_sha256d80(&header) {
         assert_eq!(shani, library_sha256d80(&header));
     }
@@ -21,9 +25,41 @@ fn specialized_matches_library_for_nonce_changes() {
         assert_eq!(specialized_sha256d80(&header), library_sha256d80(&header));
         assert_eq!(compression_sha256d80(&header), library_sha256d80(&header));
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(avx512) = avx512_sha256d80(&header) {
+            assert_eq!(avx512, library_sha256d80(&header));
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if let Some(shani) = shani_sha256d80(&header) {
             assert_eq!(shani, library_sha256d80(&header));
         }
+    }
+}
+
+#[test]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn avx512_scan_finds_known_genesis_nonce() {
+    if !avx512_available() {
+        return;
+    }
+
+    let header = decode_hex_80(GENESIS_HEADER).unwrap();
+    let actual_nonce = u32::from_le_bytes(header[76..80].try_into().unwrap());
+    let target = bits_to_target(header[72..76].try_into().unwrap()).unwrap();
+    let target_words = TargetWords::from_be_bytes(target);
+    let expected_hash = library_sha256d80(&header);
+    let avx512 = Sha256d80Avx512::new(&header).unwrap();
+
+    for (start, count) in [
+        (actual_nonce, 1),
+        (actual_nonce - 3, 7),
+        (actual_nonce - 7, 15),
+        (actual_nonce - 8, 17),
+        (actual_nonce - 65, 131),
+        (actual_nonce - 1024, 2049),
+    ] {
+        let found = avx512.scan_batch(start as u64, count, target_words);
+        assert_eq!(found.found_nonce, Some(actual_nonce));
+        assert_eq!(found.found_hash, Some(expected_hash));
     }
 }
 

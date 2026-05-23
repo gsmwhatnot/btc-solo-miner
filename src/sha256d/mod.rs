@@ -151,12 +151,16 @@ pub fn bits_to_target(bits_le: [u8; 4]) -> Result<[u8; 32], String> {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub use avx512::{avx512_available, avx512_sha256d80, Sha256d80Avx512};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use shani::{shani_available, shani_sha256d80, Sha256d80Shani};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TargetWords([u32; 8]);
 
 impl TargetWords {
+    pub const MAX: Self = Self([u32::MAX; 8]);
+
     pub fn from_be_bytes(target: [u8; 32]) -> Self {
         let mut words = [0u32; 8];
         for (i, chunk) in target.chunks_exact(4).enumerate() {
@@ -338,6 +342,8 @@ impl Sha256d80Compression {
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod avx512;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod shani;
 

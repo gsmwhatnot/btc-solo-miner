@@ -1,6 +1,6 @@
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use crate::sha256d::Sha256d80Shani;
 use crate::sha256d::{library_sha256d80, Sha256d80, Sha256d80Compression, TargetWords};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::sha256d::{Sha256d80Avx512, Sha256d80Shani};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,6 +15,7 @@ pub enum Backend {
     Library,
     Specialized80,
     Compression80,
+    Avx512,
     Shani80,
 }
 
@@ -24,6 +25,7 @@ impl Backend {
             Self::Library => "library sha2 SHA256d",
             Self::Specialized80 => "specialized scalar SHA256d80",
             Self::Compression80 => "specialized compression SHA256d80",
+            Self::Avx512 => "custom x86 AVX512 SHA256d80",
             Self::Shani80 => "custom x86 SHA-NI SHA256d80",
         }
     }
@@ -116,6 +118,8 @@ pub fn run_with_batch_size(
             let specialized = Sha256d80::new(&header);
             let compression = Sha256d80Compression::new(&header);
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            let avx512 = Sha256d80Avx512::new(&header);
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             let shani = Sha256d80Shani::new(&header);
 
             while Instant::now() < deadline {
@@ -147,6 +151,17 @@ pub fn run_with_batch_size(
                         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
                         unreachable!("SHA-NI backend is only available on x86/x86_64");
                     }
+                    Backend::Avx512 => {
+                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                        {
+                            let avx512 = avx512.as_ref().expect("AVX512 backend is not available");
+                            let (count, sum) = run_avx512_batch(avx512, start, batch_size);
+                            local_count += count;
+                            checksum ^= sum.rotate_left((count & 63) as u32);
+                        }
+                        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+                        unreachable!("AVX512 backend is only available on x86/x86_64");
+                    }
                 }
             }
 
@@ -170,6 +185,61 @@ pub fn run_with_batch_size(
         hashes_per_second,
         per_thread_hashes_per_second: hashes_per_second / threads as f64,
         checksum,
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub fn run_avx512_target_scan_with_options(
+    header: [u8; 80],
+    target: [u8; 32],
+    duration: Duration,
+    threads: usize,
+    batch_size: u64,
+    pin_threads: bool,
+) -> ScanBenchResult {
+    let target = TargetWords::from_be_bytes(target);
+    let next_nonce = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(threads);
+
+    for worker_id in 0..threads {
+        let next_nonce = Arc::clone(&next_nonce);
+        let stop = Arc::clone(&stop);
+        handles.push(thread::spawn(move || {
+            maybe_pin_current_thread(worker_id, pin_threads);
+            let mut local_count = 0u64;
+            let mut matches = 0u64;
+            let avx512 = Sha256d80Avx512::new(&header).expect("AVX512 backend is not available");
+
+            while !stop.load(Ordering::Relaxed) {
+                let start = next_nonce.fetch_add(batch_size, Ordering::Relaxed);
+                matches += avx512.count_batch_with_target(start, batch_size, target);
+                local_count += batch_size;
+            }
+
+            black_box((local_count, matches))
+        }));
+    }
+
+    thread::sleep(duration);
+    stop.store(true, Ordering::Relaxed);
+
+    let mut total_hashes = 0u64;
+    let mut matches = 0u64;
+    for handle in handles {
+        let (count, found) = handle.join().expect("target scan worker panicked");
+        total_hashes += count;
+        matches += found;
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let hashes_per_second = total_hashes as f64 / elapsed;
+    ScanBenchResult {
+        total_hashes,
+        hashes_per_second,
+        per_thread_hashes_per_second: hashes_per_second / threads as f64,
+        matches,
     }
 }
 
@@ -379,6 +449,21 @@ fn run_compression_batch(compression: &Sha256d80Compression, start: u64, count: 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn run_shani_batch(shani: &Sha256d80Shani, start: u64, count: u64) -> (u64, u64) {
     black_box(shani.checksum_batch(start, count))
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn run_avx512_batch(avx512: &Sha256d80Avx512, start: u64, count: u64) -> (u64, u64) {
+    let mut checksum = 0u64;
+    let mut offset = 0u64;
+    while offset < count {
+        let nonce = start.wrapping_add(offset) as u32;
+        let digest = avx512.hash_nonce(nonce);
+        let head = u64::from_be_bytes(digest[0..8].try_into().expect("digest length"));
+        let tail = u64::from_be_bytes(digest[24..32].try_into().expect("digest length"));
+        checksum ^= head ^ tail.rotate_left(nonce & 63);
+        offset += 1;
+    }
+    black_box((count, checksum))
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

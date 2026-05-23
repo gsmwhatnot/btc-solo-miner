@@ -2,8 +2,8 @@ use crate::benchmark::{Interleave, DEFAULT_BATCH_SIZE};
 use crate::config::{Config, MiningBackend, MiningMode};
 use crate::rpc::{BlockTemplate, RpcClient, RpcPool};
 use crate::sha256d::{
-    bits_to_target, hash_meets_target, library_sha256d80, shani_available, Sha256d80,
-    Sha256d80Shani, TargetWords,
+    avx512_available, bits_to_target, hash_meets_target, library_sha256d80, shani_available,
+    Sha256d80, Sha256d80Avx512, Sha256d80Shani, TargetWords,
 };
 use bitcoin::absolute::LockTime;
 use bitcoin::block::{Header, Version as BlockVersion};
@@ -416,6 +416,11 @@ fn scan_nonce_space(
         handles.push(thread::spawn(move || {
             maybe_pin_current_thread(worker_id, settings.pin_threads);
             let scalar = Sha256d80::new(&header);
+            let avx512 = if settings.backend == MiningBackend::Avx512 {
+                Some(Sha256d80Avx512::new(&header).expect("AVX512 checked before mining"))
+            } else {
+                None
+            };
             let shani = if settings.backend == MiningBackend::Shani {
                 Some(Sha256d80Shani::new(&header).expect("SHA-NI checked before mining"))
             } else {
@@ -429,6 +434,10 @@ fn scan_nonce_space(
                 }
                 let count = (NONCE_SPACE - start).min(settings.batch_size);
                 let batch = match settings.backend {
+                    MiningBackend::Avx512 => {
+                        let avx512 = avx512.as_ref().expect("AVX512 context exists");
+                        avx512.scan_batch(start, count, target)
+                    }
                     MiningBackend::Scalar => scalar.scan_batch(start, count, target),
                     MiningBackend::Shani => {
                         let shani = shani.as_ref().expect("SHA-NI context exists");
@@ -842,6 +851,12 @@ fn mining_settings(config: &Config, overrides: MiningOverrides) -> Result<Mining
                 .to_string(),
         );
     }
+    if backend == MiningBackend::Avx512 && !avx512_available() {
+        return Err(
+            "optimized settings request AVX512 backend, but this CPU does not expose AVX512F; run solo-miner --init on this machine"
+                .to_string(),
+        );
+    }
     let interleave = if let Some(interleave) = overrides.interleave {
         interleave
     } else if let Some(settings) = optimized {
@@ -870,6 +885,8 @@ fn mining_settings(config: &Config, overrides: MiningOverrides) -> Result<Mining
 fn default_mining_backend() -> MiningBackend {
     if shani_available() {
         MiningBackend::Shani
+    } else if avx512_available() {
+        MiningBackend::Avx512
     } else {
         MiningBackend::Scalar
     }
