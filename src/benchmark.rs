@@ -259,6 +259,63 @@ pub fn run_target_scan_with_options(
     }
 }
 
+pub fn run_scalar_target_scan_with_options(
+    header: [u8; 80],
+    target: [u8; 32],
+    duration: Duration,
+    threads: usize,
+    batch_size: u64,
+    pin_threads: bool,
+) -> ScanBenchResult {
+    let target = TargetWords::from_be_bytes(target);
+    let next_nonce = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(threads);
+
+    for worker_id in 0..threads {
+        let next_nonce = Arc::clone(&next_nonce);
+        let stop = Arc::clone(&stop);
+        handles.push(thread::spawn(move || {
+            maybe_pin_current_thread(worker_id, pin_threads);
+            let mut local_count = 0u64;
+            let mut matches = 0u64;
+            let scalar = Sha256d80::new(&header);
+
+            while !stop.load(Ordering::Relaxed) {
+                let start = next_nonce.fetch_add(batch_size, Ordering::Relaxed);
+                let result = scalar.scan_batch(start, batch_size, target);
+                local_count += result.hashes_checked;
+                if result.found_nonce.is_some() {
+                    matches += 1;
+                }
+            }
+
+            black_box((local_count, matches))
+        }));
+    }
+
+    thread::sleep(duration);
+    stop.store(true, Ordering::Relaxed);
+
+    let mut total_hashes = 0u64;
+    let mut matches = 0u64;
+    for handle in handles {
+        let (count, found) = handle.join().expect("target scan worker panicked");
+        total_hashes += count;
+        matches += found;
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let hashes_per_second = total_hashes as f64 / elapsed;
+    ScanBenchResult {
+        total_hashes,
+        hashes_per_second,
+        per_thread_hashes_per_second: hashes_per_second / threads as f64,
+        matches,
+    }
+}
+
 fn maybe_pin_current_thread(worker_id: usize, pin_threads: bool) {
     if !pin_threads {
         return;

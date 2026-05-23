@@ -1,9 +1,9 @@
 use crate::benchmark::{Interleave, DEFAULT_BATCH_SIZE};
-use crate::config::{Config, MiningMode};
+use crate::config::{Config, MiningBackend, MiningMode};
 use crate::rpc::{BlockTemplate, RpcClient, RpcPool};
 use crate::sha256d::{
-    bits_to_target, hash_meets_target, library_sha256d80, shani_available, Sha256d80Shani,
-    TargetWords,
+    bits_to_target, hash_meets_target, library_sha256d80, shani_available, Sha256d80,
+    Sha256d80Shani, TargetWords,
 };
 use bitcoin::absolute::LockTime;
 use bitcoin::block::{Header, Version as BlockVersion};
@@ -38,6 +38,7 @@ pub struct MiningOverrides {
 
 #[derive(Clone, Copy, Debug)]
 struct MiningSettings {
+    backend: MiningBackend,
     threads: usize,
     batch_size: u64,
     interleave: Interleave,
@@ -141,6 +142,7 @@ struct MinedBlockRecord {
 
 #[derive(Serialize)]
 struct MinedSettings {
+    backend: MiningBackend,
     threads: usize,
     batch_size: u64,
     interleave: usize,
@@ -148,9 +150,6 @@ struct MinedSettings {
 }
 
 pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
-    if !shani_available() {
-        return Err("live mining currently requires the custom x86 SHA-NI backend".to_string());
-    }
     validate_mining_config(&config)?;
 
     let settings = mining_settings(&config, overrides)?;
@@ -172,6 +171,7 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
         active.info.chain, active.info.blocks, active.info.headers
     );
     println!("Mining mode: {:?}", config.mining_mode);
+    println!("Backend: {}", settings.backend.name());
     println!("Threads: {}", settings.threads);
     println!("Batch size: {}", settings.batch_size);
     println!("Interleave: {}", settings.interleave.width());
@@ -285,6 +285,7 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
                     submit_result,
                     submit_reject_reason: reject_reason.clone(),
                     settings: MinedSettings {
+                        backend: settings.backend,
                         threads: settings.threads,
                         batch_size: settings.batch_size,
                         interleave: settings.interleave.width(),
@@ -414,7 +415,12 @@ fn scan_nonce_space(
         let local_hashes = Arc::clone(&local_hashes);
         handles.push(thread::spawn(move || {
             maybe_pin_current_thread(worker_id, settings.pin_threads);
-            let shani = Sha256d80Shani::new(&header).expect("SHA-NI checked before mining");
+            let scalar = Sha256d80::new(&header);
+            let shani = if settings.backend == MiningBackend::Shani {
+                Some(Sha256d80Shani::new(&header).expect("SHA-NI checked before mining"))
+            } else {
+                None
+            };
 
             while !stop.load(Ordering::Relaxed) {
                 let start = next_nonce.fetch_add(settings.batch_size, Ordering::Relaxed);
@@ -422,11 +428,19 @@ fn scan_nonce_space(
                     break;
                 }
                 let count = (NONCE_SPACE - start).min(settings.batch_size);
-                let batch = match settings.interleave {
-                    Interleave::One => shani.scan_batch(start, count, target),
-                    Interleave::Two => shani.scan_batch_interleaved2(start, count, target),
-                    Interleave::Four => shani.scan_batch_interleaved4(start, count, target),
-                    Interleave::Eight => shani.scan_batch_interleaved8(start, count, target),
+                let batch = match settings.backend {
+                    MiningBackend::Scalar => scalar.scan_batch(start, count, target),
+                    MiningBackend::Shani => {
+                        let shani = shani.as_ref().expect("SHA-NI context exists");
+                        match settings.interleave {
+                            Interleave::One => shani.scan_batch(start, count, target),
+                            Interleave::Two => shani.scan_batch_interleaved2(start, count, target),
+                            Interleave::Four => shani.scan_batch_interleaved4(start, count, target),
+                            Interleave::Eight => {
+                                shani.scan_batch_interleaved8(start, count, target)
+                            }
+                        }
+                    }
                 };
 
                 local_hashes.fetch_add(batch.hashes_checked, Ordering::Relaxed);
@@ -819,6 +833,15 @@ fn mining_settings(config: &Config, overrides: MiningOverrides) -> Result<Mining
         .unwrap_or(1);
     let fallback_threads = available.saturating_sub(config.reserved_threads).max(1);
     let optimized = config.optimized.as_ref();
+    let backend = optimized
+        .map(|settings| settings.backend)
+        .unwrap_or_else(default_mining_backend);
+    if backend == MiningBackend::Shani && !shani_available() {
+        return Err(
+            "optimized settings request SHA-NI backend, but this CPU does not expose SHA-NI; run solo-miner --init on this machine"
+                .to_string(),
+        );
+    }
     let interleave = if let Some(interleave) = overrides.interleave {
         interleave
     } else if let Some(settings) = optimized {
@@ -827,6 +850,7 @@ fn mining_settings(config: &Config, overrides: MiningOverrides) -> Result<Mining
         Interleave::Eight
     };
     Ok(MiningSettings {
+        backend,
         threads: overrides
             .threads
             .or_else(|| optimized.map(|settings| settings.threads))
@@ -841,6 +865,14 @@ fn mining_settings(config: &Config, overrides: MiningOverrides) -> Result<Mining
             .or_else(|| optimized.map(|settings| settings.pin_threads))
             .unwrap_or(false),
     })
+}
+
+fn default_mining_backend() -> MiningBackend {
+    if shani_available() {
+        MiningBackend::Shani
+    } else {
+        MiningBackend::Scalar
+    }
 }
 
 fn network_from_chain(chain: &str) -> Result<Network, String> {

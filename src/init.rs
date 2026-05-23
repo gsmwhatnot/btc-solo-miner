@@ -1,5 +1,5 @@
 use crate::benchmark::{self, Interleave};
-use crate::config::{Config, CpuFeatures, OptimizedSettings};
+use crate::config::{Config, CpuFeatures, MiningBackend, OptimizedSettings};
 use crate::sha256d::decode_hex_80;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,18 +13,14 @@ const DEFAULT_INIT_INTERLEAVES: [Interleave; 4] = [
     Interleave::Eight,
 ];
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn run_init(
     config_path: &Path,
     mut config: Config,
     benchmark_seconds: u64,
 ) -> Result<(), String> {
     use crate::config::save_config;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     use crate::sha256d::shani_available;
-
-    if !shani_available() {
-        return Err("custom SHA-NI backend is not available on this CPU".to_string());
-    }
 
     let header = decode_hex_80(INIT_HEADER_HEX)?;
     let target = [0xff; 32];
@@ -39,39 +35,63 @@ pub fn run_init(
     println!("CPU features: {}", CpuFeatures::detect().summary());
     println!("Thread candidates: {:?}", thread_candidates);
     println!("Batch candidates: {:?}", DEFAULT_INIT_BATCH_SIZES);
-    println!("Interleave candidates: 1, 2, 4, 8");
+    println!("Scalar backend: enabled");
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    println!(
+        "SHA-NI backend: {}",
+        if shani_available() {
+            "enabled"
+        } else {
+            "unavailable"
+        }
+    );
     println!();
 
     for threads in thread_candidates {
         for batch_size in DEFAULT_INIT_BATCH_SIZES {
-            for interleave in DEFAULT_INIT_INTERLEAVES {
-                candidates_tested += 1;
-                let result = benchmark::run_target_scan_with_options(
-                    header, target, duration, threads, batch_size, false, interleave,
-                );
-                println!(
-                    "candidate threads={} batch={} interleave={} -> {}",
-                    threads,
-                    batch_size,
-                    interleave.width(),
-                    format_hps(result.hashes_per_second)
-                );
+            candidates_tested += 1;
+            let result = benchmark::run_scalar_target_scan_with_options(
+                header, target, duration, threads, batch_size, false,
+            );
+            println!(
+                "candidate backend=scalar threads={} batch={} interleave=1 -> {}",
+                threads,
+                batch_size,
+                format_hps(result.hashes_per_second)
+            );
 
-                if best
-                    .as_ref()
-                    .map(|current| result.hashes_per_second > current.hashes_per_second)
-                    .unwrap_or(true)
-                {
-                    best = Some(OptimizedSettings {
+            update_best(
+                &mut best,
+                MiningBackend::Scalar,
+                threads,
+                batch_size,
+                Interleave::One,
+                &result,
+            );
+
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            if shani_available() {
+                for interleave in DEFAULT_INIT_INTERLEAVES {
+                    candidates_tested += 1;
+                    let result = benchmark::run_target_scan_with_options(
+                        header, target, duration, threads, batch_size, false, interleave,
+                    );
+                    println!(
+                        "candidate backend=sha-ni threads={} batch={} interleave={} -> {}",
                         threads,
                         batch_size,
-                        interleave: interleave.width(),
-                        pin_threads: false,
-                        hashes_per_second: result.hashes_per_second,
-                        per_thread_hashes_per_second: result.per_thread_hashes_per_second,
-                        cpu_features: CpuFeatures::detect(),
-                        benchmarked_at_unix: unix_now(),
-                    });
+                        interleave.width(),
+                        format_hps(result.hashes_per_second)
+                    );
+
+                    update_best(
+                        &mut best,
+                        MiningBackend::Shani,
+                        threads,
+                        batch_size,
+                        interleave,
+                        &result,
+                    );
                 }
             }
         }
@@ -84,6 +104,7 @@ pub fn run_init(
 
     println!();
     println!("Init complete");
+    println!("Best backend: {}", settings.backend.name());
     println!("Best threads: {}", settings.threads);
     println!("Best batch size: {}", settings.batch_size);
     println!("Best interleave: {}", settings.interleave);
@@ -99,13 +120,31 @@ pub fn run_init(
     Ok(())
 }
 
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn run_init(
-    _config_path: &Path,
-    _config: Config,
-    _benchmark_seconds: u64,
-) -> Result<(), String> {
-    Err("--init currently requires x86/x86_64 SHA-NI".to_string())
+fn update_best(
+    best: &mut Option<OptimizedSettings>,
+    backend: MiningBackend,
+    threads: usize,
+    batch_size: u64,
+    interleave: Interleave,
+    result: &benchmark::ScanBenchResult,
+) {
+    if best
+        .as_ref()
+        .map(|current| result.hashes_per_second > current.hashes_per_second)
+        .unwrap_or(true)
+    {
+        *best = Some(OptimizedSettings {
+            backend,
+            threads,
+            batch_size,
+            interleave: interleave.width(),
+            pin_threads: false,
+            hashes_per_second: result.hashes_per_second,
+            per_thread_hashes_per_second: result.per_thread_hashes_per_second,
+            cpu_features: CpuFeatures::detect(),
+            benchmarked_at_unix: unix_now(),
+        });
+    }
 }
 
 fn thread_candidates(reserved_threads: usize) -> Vec<usize> {

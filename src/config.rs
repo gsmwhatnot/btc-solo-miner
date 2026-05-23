@@ -46,6 +46,8 @@ pub struct RpcConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptimizedSettings {
+    #[serde(default)]
+    pub backend: MiningBackend,
     pub threads: usize,
     pub batch_size: u64,
     pub interleave: usize,
@@ -59,6 +61,23 @@ pub struct OptimizedSettings {
 impl OptimizedSettings {
     pub fn interleave(&self) -> Result<Interleave, String> {
         Interleave::from_width(self.interleave)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MiningBackend {
+    Scalar,
+    #[default]
+    Shani,
+}
+
+impl MiningBackend {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar SHA256d80",
+            Self::Shani => "x86 SHA-NI SHA256d80",
+        }
     }
 }
 
@@ -186,5 +205,29 @@ mod tests {
         assert!(config.initialized);
         assert_eq!(config.rpc_servers.len(), 1);
         assert_eq!(config.show_progress, 0);
+    }
+
+    #[test]
+    fn optimized_backend_defaults_for_old_config_shape() {
+        let text = r#"{
+          "threads": 4,
+          "batch_size": 262144,
+          "interleave": 8,
+          "pin_threads": false,
+          "hashes_per_second": 1000.0,
+          "per_thread_hashes_per_second": 250.0,
+          "cpu_features": {
+            "sha_ni": true,
+            "sse2": true,
+            "ssse3": true,
+            "sse41": true,
+            "avx2": false,
+            "avx512f": false,
+            "avx512vl": false
+          },
+          "benchmarked_at_unix": 1
+        }"#;
+        let settings = serde_json::from_str::<OptimizedSettings>(text).unwrap();
+        assert_eq!(settings.backend, MiningBackend::Shani);
     }
 }

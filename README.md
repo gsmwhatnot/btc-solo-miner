@@ -27,7 +27,7 @@ This repository includes `.cargo/config.toml` with:
 rustflags = ["-C", "target-cpu=native"]
 ```
 
-That is intentional. The hot path uses CPU feature detection and x86 SHA-NI, and native code generation matters for benchmark results. Release builds also use fat LTO and one codegen unit in `Cargo.toml`.
+That is intentional. The hot path uses CPU feature detection, and native code generation matters for benchmark results. On CPUs with SHA-NI, the miner uses the SHA-NI backend. On CPUs without SHA-NI, it falls back to the fixed-header scalar backend. Release builds also use fat LTO and one codegen unit in `Cargo.toml`.
 
 ## Configuration
 
@@ -64,7 +64,7 @@ Fields:
 - `show_progress`: `0` disables progress; `N` prints progress from the controller roughly every N seconds, outside the hash loop. Elapsed time is shown as `Nd hh:mm:ss`.
 - `reserved_threads`: logical CPUs left for the OS, controller, RPC, and local `bitcoind` during `--init` defaults.
 - `rpc_servers`: failover endpoints. The miner uses the first healthy synced node and submits through failover if needed.
-- `optimized`: written by `--init`; includes threads, batch size, interleave, hash rate, and CPU feature summary.
+- `optimized`: written by `--init`; includes backend, threads, batch size, interleave, hash rate, and CPU feature summary.
 
 ## Commands
 
@@ -79,10 +79,10 @@ target/release/solo-miner --real-block-benchmark --threads 64 --nonce-window 500
 
 Arguments:
 
-- `--init`: benchmarks combinations of thread count, batch size, and interleave, then writes the best result to config.
+- `--init`: benchmarks available backends plus combinations of thread count, batch size, and interleave, then writes the best result to config.
 - `--mine`: starts live mining from `config.json`.
 - `--benchmark`: compares library SHA256d, scalar specialized SHA256d80, compression-based SHA256d80, and SHA-NI SHA256d80.
-- `--scan-benchmark`: mining-style target scanning with the optimized SHA-NI scanner.
+- `--scan-benchmark`: mining-style target scanning with the optimized SHA-NI scanner. This benchmark requires SHA-NI.
 - `--work-design-benchmark`: compares shared-header split nonce ranges against per-worker extraNonce/header contexts.
 - `--real-block-benchmark`: fetches a confirmed block header from a public API and scans around its historical nonce.
 - `--benchmark-seconds N`: benchmark duration. `--init` defaults to 15 seconds per candidate when this is omitted.
@@ -98,12 +98,14 @@ Arguments:
 
 `--init` tests:
 
+- backend: scalar always; SHA-NI when the CPU exposes `sha`
 - interleave: `1`, `2`, `4`, `8`
 - batch size: `65536`, `262144`, `1048576`
 - thread counts around available logical CPUs minus `reserved_threads`
 
 It writes:
 
+- selected backend
 - selected worker count
 - selected batch size
 - selected interleave width
@@ -123,7 +125,7 @@ Live mining uses Bitcoin Core RPC:
 4. In `template` mode, preserve Core's template transaction order.
 5. In `empty` mode, include only coinbase and claim subsidy only.
 6. Build the merkle root and 80-byte header with `bitcoin` consensus serialization.
-7. Scan nonce space with the custom SHA-NI scanner.
+7. Scan nonce space with the selected backend. SHA-NI is preferred when available; scalar fixed-header SHA256d80 is used otherwise.
 8. On a candidate, verify through an independent cold path before `submitblock`.
 
 Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Template-change logs include height, previous hash, transaction count, subsidy, fees, reward, bits, and target.

@@ -240,6 +240,26 @@ impl Sha256d80 {
 
         DigestWords(compress(H0, second_block))
     }
+
+    pub fn scan_batch(&self, start: u64, count: u64, target: TargetWords) -> ScanBatchResult {
+        for offset in 0..count {
+            let nonce = start.wrapping_add(offset) as u32;
+            let digest = self.hash_nonce_words(nonce);
+            if digest.meets_target(target) {
+                return ScanBatchResult {
+                    hashes_checked: offset + 1,
+                    found_nonce: Some(nonce),
+                    found_hash: Some(digest.to_be_bytes()),
+                };
+            }
+        }
+
+        ScanBatchResult {
+            hashes_checked: count,
+            found_nonce: None,
+            found_hash: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
