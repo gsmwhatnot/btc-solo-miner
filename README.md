@@ -133,10 +133,10 @@ Live mining uses Bitcoin Core RPC:
 Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Progress uses one compact status line:
 
 ```text
-height=4965618 | reward_fee=596 | tx_fee=53216 | total_reward=53812 | ranges_completed=4 | elapsed=0d 00:13:21 | range_hashrate=1.309 GH/s | bits=1a06b2c0
+2026-05-25Z14:03:22.184 | height=4965618 | tx_fee=53216 | total_reward=53812 | ranges_completed=4 | elapsed=0d 00:13:21 | range_hashrate=1.309 GH/s | bits=1a06b2c0
 ```
 
-`reward_fee` is the block subsidy, `tx_fee` is the included transaction fee total, and `total_reward` is subsidy plus transaction fees. A height change means a new best tip/template; a same-height fee or reward change means the current template economics changed.
+The leading timestamp is UTC in `yyyy-mm-ddZhh:mm:ss.sss` format. `tx_fee` is the included transaction fee total, and `total_reward` is subsidy plus transaction fees. A height change means a new best tip/template; a same-height fee or reward change means the current template economics changed.
 
 If a fork or reorg occurs, Bitcoin Core chooses the active best chain. The miner follows the active RPC endpoint's `previousblockhash`. If a failover endpoint is needed, the miner fetches fresh work from that endpoint rather than mixing a template from one node with a chain view from another.
 

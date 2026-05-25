@@ -85,7 +85,6 @@ enum MonitorEvent {
 #[derive(Clone, Debug)]
 struct StatusTemplate {
     height: u64,
-    reward_fee: i64,
     tx_fee: i64,
     total_reward: i64,
     bits: String,
@@ -1009,7 +1008,6 @@ fn status_template(template: &BlockTemplate, mode: MiningMode) -> StatusTemplate
     };
     StatusTemplate {
         height: template.height,
-        reward_fee: template.subsidy_sat(),
         tx_fee,
         total_reward,
         bits: template.bits.clone(),
@@ -1023,9 +1021,9 @@ fn print_compact_status(
     range_hashrate: f64,
 ) {
     println!(
-        "height={} | reward_fee={} | tx_fee={} | total_reward={} | ranges_completed={} | elapsed={} | range_hashrate={} | bits={}",
+        "{} | height={} | tx_fee={} | total_reward={} | ranges_completed={} | elapsed={} | range_hashrate={} | bits={}",
+        current_utc_timestamp_millis(),
         template.height,
-        template.reward_fee,
         template.tx_fee,
         template.total_reward,
         ranges_completed,
@@ -1252,6 +1250,41 @@ fn elapsed_since_epoch(start_epoch: u64) -> Duration {
     Duration::from_secs(current_unix_secs().saturating_sub(start_epoch))
 }
 
+fn current_utc_timestamp_millis() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    format_utc_timestamp_millis(duration)
+}
+
+fn format_utc_timestamp_millis(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let millis = duration.subsec_millis();
+    let days = (total_seconds / 86_400) as i64;
+    let seconds_of_day = total_seconds % 86_400;
+    let (year, month, day) = civil_from_unix_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day / 60) % 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}Z{hour:02}:{minute:02}:{second:02}.{millis:03}")
+}
+
+fn civil_from_unix_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month as u32, day as u32)
+}
+
 fn format_hps(value: f64) -> String {
     const UNITS: [(&str, f64); 7] = [
         ("EH/s", 1e18),
@@ -1330,6 +1363,15 @@ mod tests {
             "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c",
         );
         audit_header_hash(&header, MiningBackend::Scalar, 2_083_236_893).unwrap();
+    }
+
+    #[test]
+    fn formats_utc_timestamp_with_millis() {
+        let duration = Duration::from_secs(1_779_709_402) + Duration::from_millis(184);
+        assert_eq!(
+            format_utc_timestamp_millis(duration),
+            "2026-05-25Z11:43:22.184"
+        );
     }
 
     #[test]
