@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 pub const DEFAULT_TEMPLATE_POLL_SECONDS: u64 = 5;
-pub const DEFAULT_SHOW_PROGRESS_SECONDS: u64 = 10;
+pub const DEFAULT_HASH_AUDIT_PER_MINUTE: u64 = 5;
 pub const DEFAULT_RESERVED_THREADS: usize = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -19,7 +19,9 @@ pub struct Config {
     #[serde(default = "default_longpoll")]
     pub longpoll: bool,
     #[serde(default = "default_show_progress")]
-    pub show_progress: u64,
+    pub show_progress: bool,
+    #[serde(default = "default_hash_audit_per_minute")]
+    pub hash_audit_per_minute: u64,
     #[serde(default = "default_reserved_threads")]
     pub reserved_threads: usize,
     pub rpc_servers: Vec<RpcConfig>,
@@ -138,7 +140,8 @@ pub fn default_config() -> Config {
         mining_mode: MiningMode::Template,
         template_poll_seconds: DEFAULT_TEMPLATE_POLL_SECONDS,
         longpoll: true,
-        show_progress: DEFAULT_SHOW_PROGRESS_SECONDS,
+        show_progress: true,
+        hash_audit_per_minute: DEFAULT_HASH_AUDIT_PER_MINUTE,
         reserved_threads: DEFAULT_RESERVED_THREADS,
         rpc_servers: vec![RpcConfig {
             name: "local".to_string(),
@@ -179,8 +182,12 @@ fn default_longpoll() -> bool {
     true
 }
 
-fn default_show_progress() -> u64 {
-    DEFAULT_SHOW_PROGRESS_SECONDS
+fn default_show_progress() -> bool {
+    true
+}
+
+fn default_hash_audit_per_minute() -> u64 {
+    DEFAULT_HASH_AUDIT_PER_MINUTE
 }
 
 fn default_reserved_threads() -> usize {
@@ -208,7 +215,8 @@ mod tests {
           "mining_mode": "template",
           "template_poll_seconds": 5,
           "longpoll": true,
-          "show_progress": 0,
+          "show_progress": true,
+          "hash_audit_per_minute": 0,
           "reserved_threads": 1,
           "rpc_servers": [
             { "name": "local", "url": "http://127.0.0.1:8332", "username": "u", "password": "p" }
@@ -218,7 +226,26 @@ mod tests {
         let config = serde_json::from_str::<Config>(text).unwrap();
         assert!(config.initialized);
         assert_eq!(config.rpc_servers.len(), 1);
-        assert_eq!(config.show_progress, 0);
+        assert!(config.show_progress);
+        assert_eq!(config.hash_audit_per_minute, 0);
+    }
+
+    #[test]
+    fn rejects_numeric_show_progress() {
+        let text = r#"{
+          "initialized": true,
+          "wallet_address": "bc1qexample",
+          "mining_mode": "template",
+          "template_poll_seconds": 5,
+          "longpoll": true,
+          "show_progress": 0,
+          "reserved_threads": 1,
+          "rpc_servers": [
+            { "name": "local", "url": "http://127.0.0.1:8332", "username": "u", "password": "p" }
+          ],
+          "optimized": null
+        }"#;
+        assert!(serde_json::from_str::<Config>(text).is_err());
     }
 
     #[test]

@@ -527,6 +527,7 @@ fn print_config_status(path: &std::path::Path, config: &config::Config) {
     println!("Template poll seconds: {}", config.template_poll_seconds);
     println!("Longpoll: {}", config.longpoll);
     println!("Show progress: {}", config.show_progress);
+    println!("Hash audit per minute: {}", config.hash_audit_per_minute);
     println!("Reserved threads: {}", config.reserved_threads);
     println!("RPC servers: {}", config.rpc_servers.len());
     for server in &config.rpc_servers {

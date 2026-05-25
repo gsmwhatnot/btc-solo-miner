@@ -17,6 +17,7 @@ use bitcoin::{
 };
 use serde::Serialize;
 use std::fs;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -92,10 +93,7 @@ struct StatusTemplate {
 
 struct ScanContext {
     stop: Arc<AtomicBool>,
-    show_progress: u64,
-    ranges_completed: u64,
-    run_started_epoch: u64,
-    status_template: StatusTemplate,
+    hash_audit_per_minute: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,9 +121,13 @@ struct TemplateFingerprint {
     transaction_data_hash: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct MinedBlockRecord {
-    mined_at_unix: u64,
+    record_version: u64,
+    candidate_status: String,
+    submit_status: String,
+    created_at_unix: u64,
+    updated_at_unix: u64,
     elapsed: String,
     chain: String,
     rpc_name: String,
@@ -141,16 +143,35 @@ struct MinedBlockRecord {
     mining_mode: MiningMode,
     block_txs: usize,
     template_txs: usize,
+    subsidy_sat: i64,
     fees_sat: i64,
     reward_sat: u64,
-    submit_rpc: String,
-    submit_result: String,
-    submit_reject_reason: Option<String>,
+    verified: bool,
+    verification: VerificationRecord,
+    submission: SubmissionRecord,
     settings: MinedSettings,
     config: Config,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
+struct VerificationRecord {
+    worker_hash_matches_reference: bool,
+    hash_meets_target: bool,
+    merkle_root_valid: bool,
+    witness_commitment_valid: bool,
+    bitcoin_crate_block_hash_matches: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct SubmissionRecord {
+    preferred_rpc: String,
+    submit_rpc: Option<String>,
+    result: String,
+    reject_reason: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
 struct MinedSettings {
     backend: MiningBackend,
     threads: usize,
@@ -188,10 +209,18 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
     println!("Thread pinning: {}", settings.pin_threads);
     println!(
         "Progress: {}",
-        if config.show_progress == 0 {
+        if config.show_progress {
+            "range completion"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "Hash audit: {}",
+        if config.hash_audit_per_minute == 0 {
             "disabled".to_string()
         } else {
-            format!("every {}s from controller thread", config.show_progress)
+            format!("{} samples/minute", config.hash_audit_per_minute)
         }
     );
     println!();
@@ -254,24 +283,14 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
                 println!("reward_sat={}", prepared.template.coinbasevalue);
                 println!("verified=true");
 
-                let (submit_rpc, submit_result, reject_reason) =
-                    match pool.submit_block_failover(active_index, &block_hex) {
-                        Ok((rpc_name, None)) => {
-                            println!("submit_rpc={rpc_name}");
-                            println!("submit_result=accepted");
-                            (rpc_name, "accepted".to_string(), None)
-                        }
-                        Ok((rpc_name, Some(reason))) => {
-                            println!("submit_rpc={rpc_name}");
-                            println!("submit_result=rejected");
-                            println!("reject_reason={reason}");
-                            (rpc_name, "rejected".to_string(), Some(reason))
-                        }
-                        Err(err) => return Err(err),
-                    };
-
-                append_mined_record(MinedBlockRecord {
-                    mined_at_unix: current_unix_secs(),
+                let created_at_unix = current_unix_secs();
+                let preferred_rpc = active_client.name().to_string();
+                let mut mined_record = MinedBlockRecord {
+                    record_version: 2,
+                    candidate_status: "verified".to_string(),
+                    submit_status: "pending".to_string(),
+                    created_at_unix,
+                    updated_at_unix: created_at_unix,
                     elapsed: format_duration_days(elapsed),
                     chain: chain.clone(),
                     rpc_name: active_client.name().to_string(),
@@ -287,11 +306,24 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
                     mining_mode: config.mining_mode,
                     block_txs: block.txdata.len(),
                     template_txs: prepared.template.transactions.len(),
+                    subsidy_sat: prepared.template.subsidy_sat(),
                     fees_sat: prepared.template.total_fees_sat(),
                     reward_sat: prepared.template.coinbasevalue,
-                    submit_rpc,
-                    submit_result,
-                    submit_reject_reason: reject_reason.clone(),
+                    verified: true,
+                    verification: VerificationRecord {
+                        worker_hash_matches_reference: true,
+                        hash_meets_target: true,
+                        merkle_root_valid: true,
+                        witness_commitment_valid: true,
+                        bitcoin_crate_block_hash_matches: true,
+                    },
+                    submission: SubmissionRecord {
+                        preferred_rpc: preferred_rpc.clone(),
+                        submit_rpc: None,
+                        result: "pending".to_string(),
+                        reject_reason: None,
+                        error: None,
+                    },
                     settings: MinedSettings {
                         backend: settings.backend,
                         threads: settings.threads,
@@ -300,7 +332,53 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
                         pin_threads: settings.pin_threads,
                     },
                     config: config.clone(),
-                })?;
+                };
+                append_mined_record(mined_record.clone())?;
+
+                match pool.submit_block_failover(active_index, &block_hex) {
+                    Ok((rpc_name, None)) => {
+                        println!("submit_rpc={rpc_name}");
+                        println!("submit_result=accepted");
+                        mined_record.submit_status = "accepted".to_string();
+                        mined_record.updated_at_unix = current_unix_secs();
+                        mined_record.submission = SubmissionRecord {
+                            preferred_rpc,
+                            submit_rpc: Some(rpc_name),
+                            result: "accepted".to_string(),
+                            reject_reason: None,
+                            error: None,
+                        };
+                        update_mined_record_submission(&mined_record)?;
+                    }
+                    Ok((rpc_name, Some(reason))) => {
+                        println!("submit_rpc={rpc_name}");
+                        println!("submit_result=rejected");
+                        println!("reject_reason={reason}");
+                        mined_record.submit_status = "rejected".to_string();
+                        mined_record.updated_at_unix = current_unix_secs();
+                        mined_record.submission = SubmissionRecord {
+                            preferred_rpc,
+                            submit_rpc: Some(rpc_name),
+                            result: "rejected".to_string(),
+                            reject_reason: Some(reason),
+                            error: None,
+                        };
+                        update_mined_record_submission(&mined_record)?;
+                    }
+                    Err(err) => {
+                        mined_record.submit_status = "error".to_string();
+                        mined_record.updated_at_unix = current_unix_secs();
+                        mined_record.submission = SubmissionRecord {
+                            preferred_rpc,
+                            submit_rpc: None,
+                            result: "error".to_string(),
+                            reject_reason: None,
+                            error: Some(err.clone()),
+                        };
+                        update_mined_record_submission(&mined_record)?;
+                        return Err(err);
+                    }
+                }
             }
         }
     }
@@ -350,10 +428,7 @@ fn mine_template(
             settings,
             ScanContext {
                 stop: Arc::clone(&stop),
-                show_progress: config.show_progress,
-                ranges_completed,
-                run_started_epoch,
-                status_template: status_template.clone(),
+                hash_audit_per_minute: config.hash_audit_per_minute,
             },
         )?;
 
@@ -398,18 +473,17 @@ fn scan_nonce_space(
     let next_nonce = Arc::new(AtomicU64::new(0));
     let result = Arc::new(Mutex::new(None::<Candidate>));
     let local_hashes = Arc::new(AtomicU64::new(0));
-    let (progress_stop_tx, progress_stop_rx) = mpsc::channel();
+    let (audit_stop_tx, audit_stop_rx) = mpsc::channel();
     let mut handles = Vec::with_capacity(settings.threads);
     let scan_started = Instant::now();
 
-    let progress_handle = if context.show_progress > 0 {
-        Some(spawn_progress_thread(
-            progress_stop_rx,
-            Arc::clone(&local_hashes),
-            Duration::from_secs(context.show_progress),
-            context.ranges_completed,
-            context.run_started_epoch,
-            context.status_template.clone(),
+    let audit_handle = if context.hash_audit_per_minute > 0 {
+        Some(spawn_hash_audit_thread(
+            header,
+            settings,
+            context.hash_audit_per_minute,
+            Arc::clone(&context.stop),
+            audit_stop_rx,
         ))
     } else {
         None
@@ -481,11 +555,11 @@ fn scan_nonce_space(
             .join()
             .map_err(|_| "mining worker panicked".to_string())?;
     }
-    let _ = progress_stop_tx.send(());
-    if let Some(handle) = progress_handle {
+    let _ = audit_stop_tx.send(());
+    if let Some(handle) = audit_handle {
         handle
             .join()
-            .map_err(|_| "progress worker panicked".to_string())?;
+            .map_err(|_| "hash audit worker panicked".to_string())??;
     }
 
     let candidate = *result.lock().expect("candidate mutex");
@@ -961,46 +1035,41 @@ fn print_compact_status(
     );
 }
 
-fn spawn_progress_thread(
+fn spawn_hash_audit_thread(
+    header: [u8; 80],
+    settings: MiningSettings,
+    audits_per_minute: u64,
+    stop: Arc<AtomicBool>,
     stop_rx: mpsc::Receiver<()>,
-    local_hashes: Arc<AtomicU64>,
-    interval: Duration,
-    ranges_completed: u64,
-    run_started_epoch: u64,
-    status_template: StatusTemplate,
-) -> thread::JoinHandle<()> {
+) -> thread::JoinHandle<Result<(), String>> {
     thread::spawn(move || {
-        let mut last_local = local_hashes.load(Ordering::Relaxed);
-        let mut last_time = Instant::now();
+        let interval = audit_interval(audits_per_minute);
+        let mut rng = audit_seed(&header);
+        let mut wait = audit_initial_delay(&mut rng, interval);
         loop {
-            match stop_rx.recv_timeout(interval) {
+            match stop_rx.recv_timeout(wait) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            let now = Instant::now();
-            let local = local_hashes.load(Ordering::Relaxed);
-            let interval_hashes = local.saturating_sub(last_local);
-            let interval_secs = now.duration_since(last_time).as_secs_f64().max(0.001);
-            print_compact_status(
-                &status_template,
-                ranges_completed,
-                elapsed_since_epoch(run_started_epoch),
-                interval_hashes as f64 / interval_secs,
-            );
-            last_local = local;
-            last_time = now;
+            let nonce = next_audit_nonce(&mut rng);
+            if let Err(err) = audit_header_hash(&header, settings.backend, nonce) {
+                stop.store(true, Ordering::Relaxed);
+                return Err(err);
+            }
+            wait = interval;
         }
+        Ok(())
     })
 }
 
 fn maybe_print_range_completion(
-    show_progress: u64,
+    show_progress: bool,
     status_template: &StatusTemplate,
     ranges_completed: u64,
     run_started_epoch: u64,
     scan_stats: ScanStats,
 ) {
-    if show_progress == 0 {
+    if !show_progress {
         return;
     }
     print_compact_status(
@@ -1009,6 +1078,72 @@ fn maybe_print_range_completion(
         elapsed_since_epoch(run_started_epoch),
         scan_stats.rate(),
     );
+}
+
+fn audit_interval(audits_per_minute: u64) -> Duration {
+    let millis = 60_000u64 / audits_per_minute.max(1);
+    Duration::from_millis(millis.max(1))
+}
+
+fn audit_initial_delay(state: &mut u64, interval: Duration) -> Duration {
+    let millis = interval.as_millis().max(1) as u64;
+    Duration::from_millis((next_audit_nonce(state) as u64 % millis).max(1))
+}
+
+fn audit_seed(header: &[u8; 80]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    header.hash(&mut hasher);
+    current_unix_secs().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn next_audit_nonce(state: &mut u64) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x as u32
+}
+
+fn audit_header_hash(header: &[u8; 80], backend: MiningBackend, nonce: u32) -> Result<(), String> {
+    let custom_hash = backend_hash_nonce(header, backend, nonce)?;
+    let mut audit_header = *header;
+    audit_header[76..80].copy_from_slice(&nonce.to_le_bytes());
+    let reference_hash = library_sha256d80(&audit_header);
+    if custom_hash != reference_hash {
+        return Err(format!(
+            "runtime hash audit failed for nonce {nonce}: custom {} != reference {}",
+            display_block_hash(custom_hash),
+            display_block_hash(reference_hash)
+        ));
+    }
+    let header = deserialize::<Header>(&audit_header)
+        .map_err(|err| format!("runtime hash audit failed to parse header: {err}"))?;
+    let bitcoin_hash = header.block_hash().to_string();
+    let reference_hash = display_block_hash(reference_hash);
+    if bitcoin_hash != reference_hash {
+        return Err(format!(
+            "runtime hash audit failed for nonce {nonce}: bitcoin crate hash {bitcoin_hash} != reference {reference_hash}"
+        ));
+    }
+    Ok(())
+}
+
+fn backend_hash_nonce(
+    header: &[u8; 80],
+    backend: MiningBackend,
+    nonce: u32,
+) -> Result<[u8; 32], String> {
+    match backend {
+        MiningBackend::Avx512 => Sha256d80Avx512::new(header)
+            .ok_or_else(|| "AVX512 backend unavailable during hash audit".to_string())
+            .map(|ctx| ctx.hash_nonce(nonce)),
+        MiningBackend::Scalar => Ok(Sha256d80::new(header).hash_nonce(nonce)),
+        MiningBackend::Shani => Sha256d80Shani::new(header)
+            .ok_or_else(|| "SHA-NI backend unavailable during hash audit".to_string())
+            .map(|ctx| ctx.hash_nonce(nonce)),
+    }
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
@@ -1047,30 +1182,63 @@ fn display_block_hash(internal_hash: [u8; 32]) -> String {
 }
 
 fn append_mined_record(record: MinedBlockRecord) -> Result<(), String> {
-    let path = "mined.json";
-    let mut records = if fs::metadata(path).is_ok() {
-        let text =
-            fs::read_to_string(path).map_err(|err| format!("failed to read {path}: {err}"))?;
-        if text.trim().is_empty() {
-            Vec::new()
-        } else {
-            serde_json::from_str::<Vec<serde_json::Value>>(&text)
-                .map_err(|err| format!("failed to parse {path} as a JSON array: {err}"))?
-        }
-    } else {
-        Vec::new()
-    };
+    append_mined_record_at(Path::new("mined.json"), record)
+}
 
+fn append_mined_record_at(path: &Path, record: MinedBlockRecord) -> Result<(), String> {
+    let mut records = read_mined_records(path)?;
     records.push(
         serde_json::to_value(record)
             .map_err(|err| format!("failed to serialize mined block record: {err}"))?,
     );
+    write_mined_records(path, records)
+}
+
+fn update_mined_record_submission(record: &MinedBlockRecord) -> Result<(), String> {
+    update_mined_record_submission_at(Path::new("mined.json"), record)
+}
+
+fn update_mined_record_submission_at(path: &Path, record: &MinedBlockRecord) -> Result<(), String> {
+    let mut records = read_mined_records(path)?;
+    let updated = serde_json::to_value(record)
+        .map_err(|err| format!("failed to serialize mined block record: {err}"))?;
+    let Some(index) = records.iter().rposition(|value| {
+        value
+            .get("block_hash")
+            .and_then(|hash| hash.as_str())
+            .map(|hash| hash == record.block_hash)
+            .unwrap_or(false)
+    }) else {
+        return Err(format!(
+            "failed to update mined.json: block hash {} was not found",
+            record.block_hash
+        ));
+    };
+    records[index] = updated;
+    write_mined_records(path, records)
+}
+
+fn read_mined_records(path: &Path) -> Result<Vec<serde_json::Value>, String> {
+    if fs::metadata(path).is_err() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str::<Vec<serde_json::Value>>(&text)
+        .map_err(|err| format!("failed to parse {} as a JSON array: {err}", path.display()))
+}
+
+fn write_mined_records(path: &Path, records: Vec<serde_json::Value>) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&records)
         .map_err(|err| format!("failed to format mined block records: {err}"))?;
-    let tmp_path = "mined.json.tmp";
-    fs::write(tmp_path, format!("{text}\n"))
-        .map_err(|err| format!("failed to write {tmp_path}: {err}"))?;
-    fs::rename(tmp_path, path).map_err(|err| format!("failed to replace {path}: {err}"))
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, format!("{text}\n"))
+        .map_err(|err| format!("failed to write {}: {err}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path)
+        .map_err(|err| format!("failed to replace {}: {err}", path.display()))
 }
 
 fn current_unix_secs() -> u64 {
@@ -1148,12 +1316,48 @@ mod tests {
     }
 
     #[test]
-    fn show_progress_zero_is_allowed() {
+    fn show_progress_false_is_allowed() {
         let mut config = crate::config::default_config();
         config.wallet_address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
-        config.show_progress = 0;
+        config.show_progress = false;
         config.rpc_servers.clear();
         assert!(validate_mining_config(&config).is_err());
+    }
+
+    #[test]
+    fn scalar_audit_matches_reference_hash() {
+        let header = decode_hex_80_for_test(
+            "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c",
+        );
+        audit_header_hash(&header, MiningBackend::Scalar, 2_083_236_893).unwrap();
+    }
+
+    #[test]
+    fn mined_record_appends_then_updates_submission() {
+        let path = std::env::temp_dir().join(format!(
+            "solo-miner-mined-record-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let mut record = test_mined_record("pending");
+        append_mined_record_at(&path, record.clone()).unwrap();
+
+        record.submit_status = "accepted".to_string();
+        record.updated_at_unix = 2;
+        record.submission = SubmissionRecord {
+            preferred_rpc: "local".to_string(),
+            submit_rpc: Some("local".to_string()),
+            result: "accepted".to_string(),
+            reject_reason: None,
+            error: None,
+        };
+        update_mined_record_submission_at(&path, &record).unwrap();
+
+        let records = read_mined_records(&path).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["submit_status"], "accepted");
+        assert_eq!(records[0]["submission"]["result"], "accepted");
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -1206,6 +1410,61 @@ mod tests {
             height: 4_965_618,
             default_witness_commitment: None,
             longpollid: Some("original".to_string()),
+        }
+    }
+
+    fn decode_hex_80_for_test(hex: &str) -> [u8; 80] {
+        decode_hex(hex).unwrap().try_into().unwrap()
+    }
+
+    fn test_mined_record(submit_status: &str) -> MinedBlockRecord {
+        MinedBlockRecord {
+            record_version: 2,
+            candidate_status: "verified".to_string(),
+            submit_status: submit_status.to_string(),
+            created_at_unix: 1,
+            updated_at_unix: 1,
+            elapsed: "0d 00:00:01".to_string(),
+            chain: "regtest".to_string(),
+            rpc_name: "local".to_string(),
+            rpc_url: "http://127.0.0.1:18443".to_string(),
+            height: 1,
+            previousblockhash: "00".repeat(32),
+            block_hash: "11".repeat(32),
+            target: "ff".repeat(32),
+            bits: "207fffff".to_string(),
+            nonce: 1,
+            extranonce: 0,
+            worker: 0,
+            mining_mode: MiningMode::Template,
+            block_txs: 1,
+            template_txs: 0,
+            subsidy_sat: 5_000_000_000,
+            fees_sat: 0,
+            reward_sat: 5_000_000_000,
+            verified: true,
+            verification: VerificationRecord {
+                worker_hash_matches_reference: true,
+                hash_meets_target: true,
+                merkle_root_valid: true,
+                witness_commitment_valid: true,
+                bitcoin_crate_block_hash_matches: true,
+            },
+            submission: SubmissionRecord {
+                preferred_rpc: "local".to_string(),
+                submit_rpc: None,
+                result: submit_status.to_string(),
+                reject_reason: None,
+                error: None,
+            },
+            settings: MinedSettings {
+                backend: MiningBackend::Scalar,
+                threads: 1,
+                batch_size: 1,
+                interleave: 1,
+                pin_threads: false,
+            },
+            config: crate::config::default_config(),
         }
     }
 }

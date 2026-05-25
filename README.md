@@ -40,7 +40,8 @@ Copy `config.json.example` to `config.json` or run `--init`, which creates a con
   "mining_mode": "template",
   "template_poll_seconds": 5,
   "longpoll": true,
-  "show_progress": 10,
+  "show_progress": true,
+  "hash_audit_per_minute": 5,
   "reserved_threads": 1,
   "rpc_servers": [
     {
@@ -61,7 +62,8 @@ Fields:
 - `mining_mode`: `template` includes Bitcoin Core's transaction list; `empty` mines coinbase-only and claims subsidy only.
 - `template_poll_seconds`: fixed-poll fallback interval for stale-work detection.
 - `longpoll`: enables `getblocktemplate` longpoll monitoring.
-- `show_progress`: `0` disables progress; `N` prints compact status from the controller roughly every N seconds, outside the hash loop. Elapsed time is shown as `Nd hh:mm:ss`.
+- `show_progress`: `true` prints compact status after each completed nonce range; `false` disables progress output. Elapsed time is shown as `Nd hh:mm:ss`.
+- `hash_audit_per_minute`: random cold-path hash checks per minute for the active header; `0` disables runtime audits.
 - `reserved_threads`: logical CPUs left for the OS, controller, RPC, and local `bitcoind` during `--init` defaults.
 - `rpc_servers`: failover endpoints. The miner uses the first healthy synced node and submits through failover if needed.
 - `optimized`: written by `--init`; includes backend, threads, batch size, interleave, hash rate, and CPU feature summary.
@@ -151,11 +153,14 @@ The cold path:
 - confirms the hash is `<= target`
 - checks the transaction merkle root
 - checks the segwit witness commitment when present
+- writes a verified pending record to `mined.json`
 - submits the full serialized block hex with `submitblock`
 
 `submitblock` returning JSON `null` means accepted by that node. Any non-null string is reported as a rejection reason.
 
-When a candidate block is found and submitted, the miner appends a record to `mined.json`. The record includes block height, hash, nonce, extraNonce, template economics, submit result, runtime mining settings, and the full config used for that run. Treat this file as sensitive if your config contains RPC credentials.
+During live mining, `hash_audit_per_minute` samples random nonces for the active 80-byte header and compares the selected custom backend against the reference `sha2` double-SHA256 path and the `bitcoin` crate header hash. An audit mismatch stops mining with a fatal error.
+
+When a candidate block is found, the miner appends a pending `record_version=2` record to `mined.json` before RPC submission. It then updates the same `block_hash` record to `accepted`, `rejected`, or `error` after `submitblock`. The record includes block height, hash, nonce, extraNonce, template economics, verification flags, submission result, runtime mining settings, and the full config used for that run. Treat this file as sensitive because it contains RPC credentials.
 
 ## SHA256d Optimizations
 
