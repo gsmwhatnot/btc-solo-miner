@@ -228,17 +228,22 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
     let mut chain = active.info.chain.clone();
     let mut active_client = active.client;
     let mut active_index = active.index;
+    let mut next_template = None::<BlockTemplate>;
 
     loop {
-        let template = match active_client.get_block_template(None) {
-            Ok(template) => template,
-            Err(err) => {
-                eprintln!("template fetch failed on {}: {err}", active_client.name());
-                let active = pool.select_healthy()?;
-                chain = active.info.chain.clone();
-                active_client = active.client;
-                active_index = active.index;
-                active_client.get_block_template(None)?
+        let template = if let Some(template) = next_template.take() {
+            template
+        } else {
+            match active_client.get_block_template(None) {
+                Ok(template) => template,
+                Err(err) => {
+                    eprintln!("template fetch failed on {}: {err}", active_client.name());
+                    let active = pool.select_healthy()?;
+                    chain = active.info.chain.clone();
+                    active_client = active.client;
+                    active_index = active.index;
+                    active_client.get_block_template(None)?
+                }
             }
         };
         let prepared = PreparedTemplate {
@@ -254,7 +259,10 @@ pub fn run(config: Config, overrides: MiningOverrides) -> Result<(), String> {
             settings,
             run_started_epoch,
         )? {
-            TemplateOutcome::Stale => continue,
+            TemplateOutcome::TemplateUpdate(template) => {
+                next_template = Some(template);
+                continue;
+            }
             TemplateOutcome::Found {
                 mut block,
                 candidate,
@@ -390,7 +398,20 @@ enum TemplateOutcome {
         extra_nonce: u64,
         scan_stats: ScanStats,
     },
-    Stale,
+    TemplateUpdate(BlockTemplate),
+}
+
+#[derive(Clone, Debug)]
+struct PendingTemplate {
+    template: BlockTemplate,
+    detected_at_millis: u128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TemplateUpdateKind {
+    Ignore,
+    Deferred,
+    Urgent,
 }
 
 fn mine_template(
@@ -401,12 +422,16 @@ fn mine_template(
     run_started_epoch: u64,
 ) -> Result<TemplateOutcome, String> {
     let stop = Arc::new(AtomicBool::new(false));
+    let urgent_template = Arc::new(Mutex::new(None::<PendingTemplate>));
+    let deferred_template = Arc::new(Mutex::new(None::<PendingTemplate>));
     let (monitor_tx, monitor_rx) = mpsc::channel();
     let monitor_handles = spawn_template_monitors(
         rpc.clone(),
         prepared.template.clone(),
         config,
         Arc::clone(&stop),
+        Arc::clone(&urgent_template),
+        Arc::clone(&deferred_template),
         monitor_tx,
     );
 
@@ -414,8 +439,13 @@ fn mine_template(
     let mut ranges_completed = 0u64;
     loop {
         if stop.load(Ordering::Relaxed) {
+            if let Some(template) = take_pending_template(&urgent_template) {
+                log_template_update("urgent", &template, config.mining_mode);
+                stop_monitors(stop, monitor_handles);
+                return Ok(TemplateOutcome::TemplateUpdate(template.template));
+            }
             stop_monitors(stop, monitor_handles);
-            return Ok(TemplateOutcome::Stale);
+            return Ok(TemplateOutcome::TemplateUpdate(prepared.template.clone()));
         }
 
         drain_monitor_events(&monitor_rx);
@@ -445,8 +475,13 @@ fn mine_template(
                 });
             }
             ScanOutcome::Stale => {
+                if let Some(template) = take_pending_template(&urgent_template) {
+                    log_template_update("urgent", &template, config.mining_mode);
+                    stop_monitors(stop, monitor_handles);
+                    return Ok(TemplateOutcome::TemplateUpdate(template.template));
+                }
                 stop_monitors(stop, monitor_handles);
-                return Ok(TemplateOutcome::Stale);
+                return Ok(TemplateOutcome::TemplateUpdate(prepared.template.clone()));
             }
             ScanOutcome::Exhausted(scan_stats) => {
                 ranges_completed += 1;
@@ -458,6 +493,16 @@ fn mine_template(
                     run_started_epoch,
                     scan_stats,
                 );
+                if let Some(template) = take_pending_template(&urgent_template) {
+                    log_template_update("urgent", &template, config.mining_mode);
+                    stop_monitors(stop, monitor_handles);
+                    return Ok(TemplateOutcome::TemplateUpdate(template.template));
+                }
+                if let Some(template) = take_pending_template(&deferred_template) {
+                    log_template_update("deferred", &template, config.mining_mode);
+                    stop_monitors(stop, monitor_handles);
+                    return Ok(TemplateOutcome::TemplateUpdate(template.template));
+                }
             }
         }
     }
@@ -582,18 +627,21 @@ fn spawn_template_monitors(
     original: BlockTemplate,
     config: &Config,
     stop: Arc<AtomicBool>,
+    urgent_template: Arc<Mutex<Option<PendingTemplate>>>,
+    deferred_template: Arc<Mutex<Option<PendingTemplate>>>,
     tx: mpsc::Sender<MonitorEvent>,
 ) -> Vec<thread::JoinHandle<()>> {
     let mut handles = Vec::new();
     let poll_seconds = config.template_poll_seconds.max(1);
     let mining_mode = config.mining_mode;
-    let original_fingerprint = template_fingerprint(&original, mining_mode);
 
     {
         let rpc = rpc.clone();
         let stop = Arc::clone(&stop);
         let tx = tx.clone();
-        let original_fingerprint = original_fingerprint.clone();
+        let original = original.clone();
+        let urgent_template = Arc::clone(&urgent_template);
+        let deferred_template = Arc::clone(&deferred_template);
         handles.push(thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_secs(poll_seconds));
@@ -602,10 +650,18 @@ fn spawn_template_monitors(
                 }
                 match rpc.get_block_template(None) {
                     Ok(template) => {
-                        if template_fingerprint(&template, mining_mode) != original_fingerprint {
-                            stop.store(true, Ordering::Relaxed);
-                            let _ = tx.send(MonitorEvent::TemplateChanged);
-                            break;
+                        match classify_template_update(&original, &template, mining_mode) {
+                            TemplateUpdateKind::Urgent => {
+                                store_pending_template(&urgent_template, template);
+                                stop.store(true, Ordering::Relaxed);
+                                let _ = tx.send(MonitorEvent::TemplateChanged);
+                                break;
+                            }
+                            TemplateUpdateKind::Deferred => {
+                                store_pending_template(&deferred_template, template);
+                                let _ = tx.send(MonitorEvent::TemplateChanged);
+                            }
+                            TemplateUpdateKind::Ignore => {}
                         }
                     }
                     Err(err) => {
@@ -621,16 +677,38 @@ fn spawn_template_monitors(
             let rpc = rpc.clone();
             let stop = Arc::clone(&stop);
             let tx = tx.clone();
-            let original_fingerprint = original_fingerprint.clone();
+            let original = original.clone();
+            let urgent_template = Arc::clone(&urgent_template);
+            let deferred_template = Arc::clone(&deferred_template);
             handles.push(thread::spawn(move || {
+                let mut longpollid = longpollid;
                 while !stop.load(Ordering::Relaxed) {
                     match rpc.get_block_template(Some(&longpollid)) {
                         Ok(template) => {
-                            if template_fingerprint(&template, mining_mode) != original_fingerprint
-                            {
-                                stop.store(true, Ordering::Relaxed);
-                                let _ = tx.send(MonitorEvent::TemplateChanged);
-                                break;
+                            let next_longpollid = template.longpollid.clone();
+                            match classify_template_update(&original, &template, mining_mode) {
+                                TemplateUpdateKind::Urgent => {
+                                    store_pending_template(&urgent_template, template);
+                                    stop.store(true, Ordering::Relaxed);
+                                    let _ = tx.send(MonitorEvent::TemplateChanged);
+                                    break;
+                                }
+                                TemplateUpdateKind::Deferred => {
+                                    store_pending_template(&deferred_template, template);
+                                    let _ = tx.send(MonitorEvent::TemplateChanged);
+                                    if let Some(next_longpollid) = next_longpollid {
+                                        longpollid = next_longpollid;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                TemplateUpdateKind::Ignore => {
+                                    if let Some(next_longpollid) = next_longpollid {
+                                        longpollid = next_longpollid;
+                                    } else {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Err(_) => {
@@ -648,6 +726,56 @@ fn spawn_template_monitors(
 fn stop_monitors(stop: Arc<AtomicBool>, handles: Vec<thread::JoinHandle<()>>) {
     stop.store(true, Ordering::Relaxed);
     drop(handles);
+}
+
+fn classify_template_update(
+    original: &BlockTemplate,
+    updated: &BlockTemplate,
+    mode: MiningMode,
+) -> TemplateUpdateKind {
+    if original.height != updated.height
+        || original.previousblockhash != updated.previousblockhash
+        || original.bits != updated.bits
+        || original.target != updated.target
+    {
+        return TemplateUpdateKind::Urgent;
+    }
+
+    if mode == MiningMode::Empty {
+        return TemplateUpdateKind::Ignore;
+    }
+
+    if template_fingerprint(original, mode) != template_fingerprint(updated, mode) {
+        TemplateUpdateKind::Deferred
+    } else {
+        TemplateUpdateKind::Ignore
+    }
+}
+
+fn store_pending_template(slot: &Arc<Mutex<Option<PendingTemplate>>>, template: BlockTemplate) {
+    *slot.lock().expect("pending template mutex") = Some(PendingTemplate {
+        template,
+        detected_at_millis: current_unix_millis(),
+    });
+}
+
+fn take_pending_template(slot: &Arc<Mutex<Option<PendingTemplate>>>) -> Option<PendingTemplate> {
+    slot.lock().expect("pending template mutex").take()
+}
+
+fn log_template_update(kind: &str, pending: &PendingTemplate, mode: MiningMode) {
+    let delay = current_unix_millis().saturating_sub(pending.detected_at_millis);
+    let status = status_template(&pending.template, mode);
+    println!(
+        "{} | template_update={} | apply_delay_ms={} | height={} | tx_fee={} | total_reward={} | bits={}",
+        current_utc_timestamp_millis(),
+        kind,
+        delay,
+        status.height,
+        status.tx_fee,
+        status.total_reward,
+        status.bits,
+    );
 }
 
 fn template_fingerprint(template: &BlockTemplate, mode: MiningMode) -> TemplateFingerprint {
@@ -1246,6 +1374,13 @@ fn current_unix_secs() -> u64 {
         .as_secs()
 }
 
+fn current_unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis()
+}
+
 fn elapsed_since_epoch(start_epoch: u64) -> Duration {
     Duration::from_secs(current_unix_secs().saturating_sub(start_epoch))
 }
@@ -1430,6 +1565,56 @@ mod tests {
         assert_ne!(
             template_fingerprint(&original, MiningMode::Empty),
             template_fingerprint(&changed, MiningMode::Empty)
+        );
+    }
+
+    #[test]
+    fn template_classifier_marks_chain_changes_urgent() {
+        let original = test_template(1_000, vec![("00", 100)]);
+
+        let mut changed_height = original.clone();
+        changed_height.height += 1;
+        assert_eq!(
+            classify_template_update(&original, &changed_height, MiningMode::Template),
+            TemplateUpdateKind::Urgent
+        );
+
+        let mut changed_prevhash = original.clone();
+        changed_prevhash.previousblockhash =
+            "0000000000000000000000000000000000000000000000000000000000000002".to_string();
+        assert_eq!(
+            classify_template_update(&original, &changed_prevhash, MiningMode::Template),
+            TemplateUpdateKind::Urgent
+        );
+
+        let mut changed_bits = original.clone();
+        changed_bits.bits = "1d00ffff".to_string();
+        assert_eq!(
+            classify_template_update(&original, &changed_bits, MiningMode::Template),
+            TemplateUpdateKind::Urgent
+        );
+
+        let mut changed_target = original.clone();
+        changed_target.target =
+            "00000000ffff0000000000000000000000000000000000000000000000000000".to_string();
+        assert_eq!(
+            classify_template_update(&original, &changed_target, MiningMode::Template),
+            TemplateUpdateKind::Urgent
+        );
+    }
+
+    #[test]
+    fn template_classifier_defers_same_tip_fee_changes() {
+        let original = test_template(1_000, vec![("00", 100)]);
+        let changed = test_template(1_200, vec![("00", 100), ("01", 100)]);
+
+        assert_eq!(
+            classify_template_update(&original, &changed, MiningMode::Template),
+            TemplateUpdateKind::Deferred
+        );
+        assert_eq!(
+            classify_template_update(&original, &changed, MiningMode::Empty),
+            TemplateUpdateKind::Ignore
         );
     }
 

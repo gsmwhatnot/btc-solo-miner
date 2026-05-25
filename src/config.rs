@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_TEMPLATE_POLL_SECONDS: u64 = 5;
+pub const DEFAULT_TEMPLATE_POLL_SECONDS: u64 = 60;
 pub const DEFAULT_HASH_AUDIT_PER_MINUTE: u64 = 5;
 pub const DEFAULT_RESERVED_THREADS: usize = 1;
 

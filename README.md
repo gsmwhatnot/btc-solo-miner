@@ -38,7 +38,7 @@ Copy `config.json.example` to `config.json` or run `--init`, which creates a con
   "initialized": false,
   "wallet_address": "",
   "mining_mode": "template",
-  "template_poll_seconds": 5,
+  "template_poll_seconds": 60,
   "longpoll": true,
   "show_progress": true,
   "hash_audit_per_minute": 5,
@@ -60,7 +60,7 @@ Fields:
 - `initialized`: set by `--init` after machine tuning.
 - `wallet_address`: payout address for the coinbase transaction.
 - `mining_mode`: `template` includes Bitcoin Core's transaction list; `empty` mines coinbase-only and claims subsidy only.
-- `template_poll_seconds`: fixed-poll fallback interval for stale-work detection.
+- `template_poll_seconds`: fixed-poll backup interval for stale-work detection when longpoll does not wake; `60` is a reasonable default with longpoll enabled.
 - `longpoll`: enables `getblocktemplate` longpoll monitoring.
 - `show_progress`: `true` prints compact status after each completed nonce range; `false` disables progress output. Elapsed time is shown as `Nd hh:mm:ss`.
 - `hash_audit_per_minute`: random cold-path hash checks per minute for the active header; `0` disables runtime audits.
@@ -130,7 +130,7 @@ Live mining uses Bitcoin Core RPC:
 7. Scan nonce space with the selected backend. `--init` benchmarks available backends and writes the fastest choice to config.
 8. On a candidate, verify through an independent cold path before `submitblock`.
 
-Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. If the template changes, including a new block height or same-height transaction set refresh, workers stop at batch boundaries and restart from a fresh template. Progress uses one compact status line:
+Stale work is handled by both `getblocktemplate` longpoll and a fixed poll fallback. Chain-critical template changes, including height, previous block hash, bits, or target changes, stop workers at batch boundaries and restart from a fresh header. Same-height fee or transaction updates are deferred until the current nonce range completes, then the miner rebuilds the merkle root/header and restarts from nonce 0. Progress uses one compact status line:
 
 ```text
 2026-05-25Z14:03:22.184 | height=4965618 | tx_fee=53216 | total_reward=53812 | ranges_completed=4 | elapsed=0d 00:13:21 | range_hashrate=1.309 GH/s | bits=1a06b2c0
